@@ -90,16 +90,29 @@ pomiarowe (czujnik temperatury, ciśnienia, przepływu), ale BEZ jawnie podanego
 sygnału - zostaw pola analog/cyfrowy puste. Program sam przypisze AI na podstawie
 typu urządzenia. NIE wymyślaj sygnałów, których nie ma w źródle.
 
-KRYTYCZNA ZASADA - NIE POMIJAJ WIERSZY BEZ NUMERU L.P.:
-W realnych zestawieniach WIELE wierszy nie ma wypełnionego numeru L.p. ani
-oznaczenia projektowego - to są kolejne, odrębne urządzenia tego samego typu
-(np. druga, trzecia, czwarta "Przetwornik temperatury" pod rząd), a NIE
-kontynuacja/duplikat wiersza powyżej. KAŻDY wiersz z wypełnionym polem
-"Typ / Opis odbiornika" to OSOBNE urządzenie do wyekstrahowania, niezależnie
-od tego, czy ma numer L.p., układ czy oznaczenie. Puste L.p. NIE oznacza
-"pomiń ten wiersz" - oznacza tylko, że w tym konkretnym wierszu tych pól nie
-podano. Licz i ekstrahuj WSZYSTKIE wiersze z opisem urządzenia, nawet jeśli
-wygląda na powtórzenie poprzedniego typu.
+ZASADA - WIERSZE BEZ NUMERU L.P.:
+W realnych zestawieniach wiele wierszy nie ma wypełnionego numeru L.p. ani
+oznaczenia projektowego. Zanim je zliczysz, rozróżnij DWIE możliwe sytuacje:
+
+(A) To są kolejne, NIEZALEŻNE urządzenia tego samego typu, po prostu bez
+    numeracji w źródle. Licz każdy jako osobną pozycję.
+
+(B) To są WYPISANE Z NAZWY EGZEMPLARZE zbiorczej pozycji, która ma numer L.p.
+    i JAWNIE PODANĄ Ilość > 1. Rozpoznasz to po wzorcu: wiersz z L.p. i np.
+    Ilość=12 o opisie zbiorczym (np. "Czujniki temperatury w układzie",
+    "TI (różne)"), a obok/pod nim kilka osobno nazwanych wierszy bez L.p.
+    o tym samym temacie (np. kolejne "Przetwornik temperatury" z różnymi
+    tagami). W tym wypadku wiersze bez L.p. to DOKUMENTACJA składu tej
+    zbiorczej ilości, NIE dodatkowe urządzenia - liczenie obu naraz
+    PODWOI liczbę fizycznych urządzeń.
+
+Jeśli nie masz pewności, którą sytuację widzisz - NIE zgaduj. Wyekstrahuj
+wiersz zbiorczy (z L.p. i Ilość) jako jedną pozycję, pomiń wiersze bez L.p.
+o tym samym temacie, i w polu "uwagi" tej pozycji zbiorczej napisz:
+"Możliwe wiersze indywidualne tego typu w źródle - zweryfikuj czy Ilość
+nie jest już zsumowana". To jest bezpieczniejsza domyślna interpretacja,
+bo zawyżenie liczby urządzeń (podwójne liczenie) jest gorszym błędem niż
+lekkie zaniżenie, gdy sytuacja jest niejednoznaczna.
 
 CO EKSTRAHUJESZ - dla każdego urządzenia OBIEKTOWEGO wypełnij pola:
 - lp: numer porządkowy (jeśli jest)

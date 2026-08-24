@@ -218,7 +218,79 @@ def parse_devices(df: pd.DataFrame) -> tuple[list[Device], list[str]]:
 
         devices.append(dev)
 
+    global_warnings.extend(_detect_possible_double_counting(devices))
+
     return devices, global_warnings
+
+
+def _normalize_opis_key(opis: str) -> str:
+    """Uproszczony klucz porównawczy opisu - do wykrywania powtarzających się typów."""
+    n = _normalize_pl(opis).strip()
+    # Odetnij końcowe oznaczenia typu "D1", "D2", numer w nawiasie itp. - zostaw rdzeń
+    n = re.sub(r"\s*\(?\b[a-z]?\d+\)?\s*$", "", n).strip()
+    return n
+
+
+def _normalize_pl(text: str) -> str:
+    pl_map = str.maketrans({
+        "ą": "a", "ć": "c", "ę": "e", "ł": "l", "ń": "n",
+        "ó": "o", "ś": "s", "ź": "z", "ż": "z",
+    })
+    return str(text).lower().translate(pl_map)
+
+
+def _keywords(opis_key: str) -> set[str]:
+    """Wyciąga istotne słowa kluczowe (długość >=5 znaków) do porównania podobieństwa."""
+    stopwords = {"ukladzie", "rozne", "roznych", "razem", "obiekcie"}
+    return {w for w in opis_key.split() if len(w) >= 5 and w not in stopwords}
+
+
+def _detect_possible_double_counting(devices: list[Device]) -> list[str]:
+    """
+    Wykrywa PODEJRZANY wzorzec: pozycja z jawną Ilością > 1 sąsiadująca z wieloma
+    pozycjami "bezimiennymi" (bez L.p./oznaczenia, ilość domyślna=1) o TEMATYCZNIE
+    podobnym opisie (wspólne słowo kluczowe, np. "temperatury"/"cisnienia").
+    To może oznaczać, że arkusz ma strukturę hierarchiczną (zbiorczy licznik +
+    wypisane z nazwy egzemplarze tego licznika), a nie płaską listę niezależnych
+    urządzeń - w takim wypadku prosty parser liczy je PODWÓJNIE.
+
+    Dopasowanie po wspólnych słowach kluczowych, nie po podciągu całego opisu -
+    bo zbiorczy wiersz bywa opisany inną frazą niż wiersze indywidualne (np.
+    "Czujniki temperatury w układzie" [zbiorczy] vs "Przetwornik temperatury"
+    [indywidualne] - różny tekst, ten sam temat).
+
+    Nie zmienia liczenia (Zero-Hallucination: nie zgadujemy, która interpretacja
+    jest poprawna) - tylko ostrzega inżyniera, żeby zweryfikował ręcznie.
+    """
+    warnings: list[str] = []
+    from collections import defaultdict
+
+    # Zbierz "bezimienne" wiersze (bez oznaczenia/L.p., domyślna ilość=1) z ich słowami kluczowymi
+    unnamed: list[tuple[set[str], str]] = []  # (słowa_kluczowe, opis_oryginalny)
+    named_aggregates: list[tuple[set[str], int, str]] = []  # (słowa_kluczowe, ilość, opis)
+
+    for dev in devices:
+        key = _normalize_opis_key(dev.opis)
+        kws = _keywords(key)
+        if not kws:
+            continue
+        bez_oznaczenia = not dev.oznaczenie and not dev.lp
+        if bez_oznaczenia and dev.ilosc == 1 and not dev.ilosc_flaga:
+            unnamed.append((kws, dev.opis))
+        elif dev.ilosc > 1:
+            named_aggregates.append((kws, dev.ilosc, dev.opis))
+
+    for agg_kws, agg_ilosc, opis_orig in named_aggregates:
+        podobne = sum(1 for kws, _ in unnamed if kws & agg_kws)
+        if podobne >= 2:
+            warnings.append(
+                f"⚠ MOŻLIWE PODWÓJNE LICZENIE: pozycja „{opis_orig}” ma ilość={agg_ilosc}, "
+                f"a w arkuszu jest {podobne} osobnych, bezimiennych wierszy o zbliżonym temacie. "
+                f"Jeśli to te same fizyczne urządzenia wypisane z nazwy (nie dodatkowe) - "
+                f"bilans I/O jest zawyżony. Zweryfikuj ręcznie przed generowaniem oferty."
+            )
+
+    return warnings
 
 
 def _attach_signals(dev: Device, analog_raw: str, cyfrowy_raw: str) -> None:
@@ -349,6 +421,8 @@ def parse_ai_devices(records: list[dict]) -> tuple[list[Device], list[str]]:
                 f"nie urządzenia obiektowe. Prawdopodobnie wgrano listę materiałów "
                 f"zamiast zestawienia urządzeń."
             )
+
+        global_warnings.extend(_detect_possible_double_counting(devices))
 
     return devices, global_warnings
 

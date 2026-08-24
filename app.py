@@ -747,10 +747,13 @@ def main():
         if excel_file:
             try:
                 excel_df = read_excel_file(excel_file, sheet_name=selected_sheet)
-                if isinstance(selected_sheet, str):
-                    st.markdown(f"**Podgląd arkusza „{selected_sheet}”:**")
+                sheet_label = f"„{selected_sheet}”" if isinstance(selected_sheet, str) else ""
+                total_rows = len(excel_df)
+                if total_rows > 10:
+                    st.markdown(f"**Podgląd arkusza {sheet_label}** — pokazano pierwsze 10 "
+                               f"z **{total_rows}** wierszy. Analiza uwzględni wszystkie {total_rows}.")
                 else:
-                    st.markdown("**Podgląd wgranego arkusza:**")
+                    st.markdown(f"**Podgląd arkusza {sheet_label}** — {total_rows} wierszy (wszystkie widoczne).")
                 st.dataframe(excel_df.head(10), use_container_width=True)
             except ValueError as exc:
                 st.error(str(exc))

@@ -264,3 +264,41 @@ samego pliku, ale różnych zakładek, nie będą już miały identycznej nazwy.
 Zweryfikowano na realnym pliku: arkusz domyślny (pierwszy) daje bilans
 DI=8/DO=4/AI=24/AO=10 (po rezerwie 30%), arkusz "Sheet1" (drugi) daje
 DI=13/DO=20/AI=45/AO=15 — oba poprawnie dostępne przez wybór w interfejsie.
+
+## Wykryty i naprawiony problem: podwójne liczenie w zestawieniach hierarchicznych
+
+**Kontekst:** test porównawczy bez-AI vs z-AI na tym samym pliku dał znacząco
+różne bilanse (70 vs 48 sygnałów I/O). Wstępna diagnoza ("AI gubi wiersze")
+okazała się BŁĘDNA po dokładnej analizie danych źródłowych.
+
+**Rzeczywista przyczyna:** niektóre zestawienia mają strukturę hierarchiczną —
+wiersz z numerem L.p. i jawnie podaną Ilość > 1 (np. "TI (różne)" Ilość=12)
+to już ZBIORCZY licznik, a sąsiednie wiersze bez L.p. o tym samym temacie
+(np. kolejne "Przetwornik temperatury") to WYPISANE Z NAZWY EGZEMPLARZE tego
+licznika — nie dodatkowe, osobne urządzenia. Dowód: liczba nazwanych
+"Przetwornik ciśnienia PI" (3) zgadzała się DOKŁADNIE ze zbiorczym licznikiem
+"PI (różne)" Ilość=3.
+
+Parser liczący każdy wiersz niezależnie (zarówno ścieżka bez AI, jak
+pierwotnie i AI po błędnej korekcie promptu) liczy takie urządzenia PODWÓJNIE.
+
+**Rozwiązanie (świadomie ostrożne — bez cichego zgadywania):**
+- `core/parser.py`: nowa funkcja `_detect_possible_double_counting()` wykrywa
+  ten wzorzec (agregat + ≥2 tematycznie podobne bezimienne wiersze) i dodaje
+  JAWNE ostrzeżenie w interfejsie — NIE zmienia cicho matematyki liczenia,
+  bo to wymaga potwierdzenia konwencji danego pliku przez inżyniera (podobnie
+  jak wcześniejsze przypadki "pomiar"/lokalny-zdalny).
+- `core/ai_contract.py`: złagodzono wcześniejszą (błędną) instrukcję "nigdy
+  nie pomijaj wierszy bez L.p." na nuansowaną zasadę rozróżniającą oba
+  scenariusze, z bezpieczną domyślną interpretacją (nie podwajaj przy
+  niepewności) i wymogiem zaznaczenia niejednoznaczności w polu "uwagi".
+
+Zweryfikowano brak fałszywych alarmów na 3 innych plikach/arkuszach bez tego
+wzorca (wzorcowy plik testowy, pierwszy arkusz tego samego Excela, próbka
+OFE_381). **60 testów, wszystkie przechodzą.**
+
+**Lekcja:** pierwsza diagnoza rozbieżności AI vs bez-AI była pochopna —
+założono, że deterministyczny parser jest "prawdą odniesienia", a AI się myli.
+Głębsza analiza danych pokazała odwrotnie: to parser miał lukę (brak
+rozpoznawania agregatów), a rozbieżność ujawniła realny problem w danych
+wejściowych, nie w ekstrakcji AI.

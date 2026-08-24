@@ -668,3 +668,55 @@ def test_cennik_brak_duplikatow_z_konfliktem_ceny():
                 by_nr[nr].add(cena)
     konflikty = {nr: ceny for nr, ceny in by_nr.items() if len(ceny) > 1}
     assert not konflikty, f"Numery katalogowe z konfliktującymi cenami: {konflikty}"
+
+
+# --- Wykrywanie możliwego podwójnego liczenia (struktura hierarchiczna) ------
+
+from core.parser import _detect_possible_double_counting, Device
+
+
+def _dev(opis, ilosc=1, oznaczenie="", lp=""):
+    d = Device()
+    d.opis = opis
+    d.ilosc = ilosc
+    d.oznaczenie = oznaczenie
+    d.lp = lp
+    return d
+
+
+def test_wykrywa_podwojne_liczenie_zbiorczy_licznik():
+    """
+    Realny przypadek: wiersz zbiorczy 'Czujniki temperatury w układzie' Ilość=12
+    obok kilku indywidualnie nazwanych 'Przetwornik temperatury' - to podejrzany
+    wzorzec, powinien wygenerować ostrzeżenie.
+    """
+    devices = [
+        _dev("Czujniki temperatury w układzie", ilosc=12, lp="10"),
+        _dev("Przetwornik temperatury"),
+        _dev("Przetwornik temperatury"),
+        _dev("Przetwornik temperatury"),
+    ]
+    warns = _detect_possible_double_counting(devices)
+    assert len(warns) == 1
+    assert "PODWÓJNE LICZENIE" in warns[0]
+
+
+def test_nie_wykrywa_gdy_brak_wzorca():
+    """Zwykłe, niezależne urządzenia (bez zbiorczego licznika) - brak ostrzeżenia."""
+    devices = [
+        _dev("Pompa obiegowa", ilosc=1, oznaczenie="P1", lp="1"),
+        _dev("Zawór regulacyjny", ilosc=1, oznaczenie="ZR1", lp="2"),
+        _dev("Przetwornik ciśnienia", ilosc=1, oznaczenie="PI1", lp="3"),
+    ]
+    warns = _detect_possible_double_counting(devices)
+    assert warns == []
+
+
+def test_nie_wykrywa_pojedynczego_podobienstwa():
+    """Tylko 1 podobny wiersz obok agregatu - za mało, żeby ostrzegać (próg >=2)."""
+    devices = [
+        _dev("Czujniki temperatury w układzie", ilosc=12, lp="10"),
+        _dev("Przetwornik temperatury"),
+    ]
+    warns = _detect_possible_double_counting(devices)
+    assert warns == []
