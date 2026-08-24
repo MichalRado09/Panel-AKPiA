@@ -330,13 +330,11 @@ def _deduplicate_hierarchical_aggregates(
         if not kws:
             other.append(dev)
             continue
-        # Wiersz szczegółowy = brak L.p. ORAZ brak jawnie podanej Ilości.
-        # Wypełnione 'oznaczenie' NIE dyskwalifikuje: w realnych zestawieniach
-        # wiersze rozpisujące pozycję zbiorczą często mają tag projektowy
-        # (np. "01PCB20 AT001"), a mimo to są egzemplarzami tej pozycji, nie
-        # dodatkowymi urządzeniami. Poprzednie kryterium (not oznaczenie)
-        # przepuszczało je do osobnego liczenia -> zawyżony bilans I/O.
-        wiersz_szczegolowy = not dev.lp and not dev.ilosc_podana
+        # Wiersz szczegółowy = brak jawnie podanej Ilości.
+        # Wypełnione 'oznaczenie' NIE dyskwalifikuje (rozpisane sztuki mają tag).
+        # Pomijamy sprawdzanie L.p., bo projektanci odruchowo przeciągają numerację
+        # w Excelu w dół dla każdego wiersza, co blokowało deduplikację.
+        wiersz_szczegolowy = not dev.ilosc_podana
         if wiersz_szczegolowy and dev.ilosc == 1 and not dev.ilosc_flaga:
             unnamed.append(dev)
         elif dev.lp and dev.ilosc > 1:
