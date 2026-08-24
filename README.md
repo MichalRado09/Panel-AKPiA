@@ -302,3 +302,33 @@ założono, że deterministyczny parser jest "prawdą odniesienia", a AI się my
 Głębsza analiza danych pokazała odwrotnie: to parser miał lukę (brak
 rozpoznawania agregatów), a rozbieżność ujawniła realny problem w danych
 wejściowych, nie w ekstrakcji AI.
+
+## Naprawa: automatyczna deduplikacja hierarchicznych zestawień
+
+Wcześniejsze wykrywanie (samo ostrzeganie) zastąpiono **faktyczną deduplikacją**
+w `core/parser.py` — funkcja `_deduplicate_hierarchical_aggregates()`:
+
+- Wykrywa wiersz zbiorczy (L.p. + jawna Ilość>1) i tematycznie podobne wiersze
+  bezimienne (bez L.p. ani własnego oznaczenia) — usuwa te drugie z liczenia,
+  zostawiając jeden, autorytatywny licznik zbiorczy.
+- **Kody obszaru instalacji rozstrzygają nad ogólnymi słowami.** Wykryto i
+  naprawiono realny błąd: "Siłownik 01PCB10 AA401" (grupa D1-D4) błędnie
+  wchłonął "Siłownik 01PCB40 AA401" (INNY obszar instalacji) przez wspólne
+  ogólne słowa "siłownik"/"napędem" i przypadkowo powtórzony numer tagu.
+  Teraz kod obszaru (wzorzec: cyfry+litery+cyfry, np. "01pcb10") musi się
+  zgadzać dokładnie, inaczej urządzenia NIE są łączone.
+- **Wiersze z własnym oznaczeniem projektowym nigdy nie są usuwane** — np.
+  "01PCB20 AT001" ma unikalny tag, więc to konkretnie zidentyfikowany
+  przyrząd, nie bezimienny duplikat, nawet jeśli tematycznie pasuje.
+- Pełny audyt: usunięcie zawsze generuje ostrzeżenie z listą wykluczonych
+  opisów ORAZ dopisek w polu "uwagi" pozycji zbiorczej — nic nie znika
+  po cichu, inżynier zawsze widzi, co i dlaczego wykluczono.
+
+**Wynik na realnym pliku (Wujek, Sheet1):** bilans bazowy spadł z zawyżonych
+70 do 56 (bliżej niezależnie liczonej ścieżki AI: 48) — 30 urządzeń
+zredukowano do 16 po usunięciu 14 zduplikowanych wierszy w 3 grupach.
+
+Zweryfikowano brak fałszywych alarmów na 3 innych plikach bez tego wzorca.
+**63 testy, wszystkie przechodzą**, w tym 2 nowe testy regresyjne chroniące
+przed dokładnie tym błędem (mieszanie obszarów instalacji, usuwanie
+oznaczonych przyrządów).

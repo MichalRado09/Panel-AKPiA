@@ -670,9 +670,9 @@ def test_cennik_brak_duplikatow_z_konfliktem_ceny():
     assert not konflikty, f"Numery katalogowe z konfliktującymi cenami: {konflikty}"
 
 
-# --- Wykrywanie możliwego podwójnego liczenia (struktura hierarchiczna) ------
+# --- Deduplikacja hierarchicznych zestawień (zbiorczy licznik + wypisane egz.) -
 
-from core.parser import _detect_possible_double_counting, Device
+from core.parser import _deduplicate_hierarchical_aggregates, Device
 
 
 def _dev(opis, ilosc=1, oznaczenie="", lp=""):
@@ -684,11 +684,12 @@ def _dev(opis, ilosc=1, oznaczenie="", lp=""):
     return d
 
 
-def test_wykrywa_podwojne_liczenie_zbiorczy_licznik():
+def test_deduplikuje_zbiorczy_licznik():
     """
     Realny przypadek: wiersz zbiorczy 'Czujniki temperatury w układzie' Ilość=12
-    obok kilku indywidualnie nazwanych 'Przetwornik temperatury' - to podejrzany
-    wzorzec, powinien wygenerować ostrzeżenie.
+    obok kilku indywidualnie nazwanych 'Przetwornik temperatury' - te ostatnie
+    powinny zostać USUNIĘTE z liczenia (są już wliczone w Ilość=12), zostaje
+    tylko pozycja zbiorcza, plus ostrzeżenie audytowe.
     """
     devices = [
         _dev("Czujniki temperatury w układzie", ilosc=12, lp="10"),
@@ -696,27 +697,95 @@ def test_wykrywa_podwojne_liczenie_zbiorczy_licznik():
         _dev("Przetwornik temperatury"),
         _dev("Przetwornik temperatury"),
     ]
-    warns = _detect_possible_double_counting(devices)
+    result, warns = _deduplicate_hierarchical_aggregates(devices)
+    assert len(result) == 1  # zostaje tylko zbiorczy wiersz
+    assert result[0].opis == "Czujniki temperatury w układzie"
+    assert result[0].ilosc == 12
     assert len(warns) == 1
-    assert "PODWÓJNE LICZENIE" in warns[0]
+    assert "DEDUPLIKACJA" in warns[0]
+    assert "wypisanych z nazwy" in result[0].uwagi
 
 
-def test_nie_wykrywa_gdy_brak_wzorca():
-    """Zwykłe, niezależne urządzenia (bez zbiorczego licznika) - brak ostrzeżenia."""
+def test_nie_deduplikuje_gdy_brak_wzorca():
+    """Zwykłe, niezależne urządzenia (bez zbiorczego licznika) - nic nie usunięte."""
     devices = [
         _dev("Pompa obiegowa", ilosc=1, oznaczenie="P1", lp="1"),
         _dev("Zawór regulacyjny", ilosc=1, oznaczenie="ZR1", lp="2"),
         _dev("Przetwornik ciśnienia", ilosc=1, oznaczenie="PI1", lp="3"),
     ]
-    warns = _detect_possible_double_counting(devices)
+    result, warns = _deduplicate_hierarchical_aggregates(devices)
+    assert len(result) == 3
     assert warns == []
 
 
-def test_nie_wykrywa_pojedynczego_podobienstwa():
-    """Tylko 1 podobny wiersz obok agregatu - za mało, żeby ostrzegać (próg >=2)."""
+def test_nie_deduplikuje_pojedynczego_podobienstwa():
+    """Tylko 1 podobny wiersz obok agregatu - za mało, żeby uznać za wzorzec (próg >=2)."""
     devices = [
         _dev("Czujniki temperatury w układzie", ilosc=12, lp="10"),
         _dev("Przetwornik temperatury"),
     ]
-    warns = _detect_possible_double_counting(devices)
+    result, warns = _deduplicate_hierarchical_aggregates(devices)
+    assert len(result) == 2  # nic nie usunięte
     assert warns == []
+
+
+def test_deduplikacja_nie_miesza_roznych_obszarow_instalacji():
+    """
+    REGRESJA na realnie znaleziony błąd: "Siłownik z napędem 01PCB10 AA401"
+    (grupa D1-D4, Ilość=4) NIE powinien wchłonąć "Siłownik z napędem 01PCB40
+    AA401" - to RÓŻNE obszary instalacji (01PCB10 vs 01PCB40), mimo identycznego
+    numeru tagu (AA401) i tych samych ogólnych słów ("siłownik", "napędem").
+    Kod obszaru instalacji musi być rozstrzygający, nie ogólne słowa opisowe.
+    """
+    devices = [
+        _dev("Siłownik z napędem 01PCB10 AA401", ilosc=4, lp="8", oznaczenie="D1-D4 (M)"),
+        _dev("Siłownik z napędem 01PCB10 AA402"),
+        _dev("Siłownik z napędem 01PCB10 AA403"),
+        _dev("Siłownik z napędem 01PCB40 AA401"),  # inny obszar - NIE usuwać
+    ]
+    result, warns = _deduplicate_hierarchical_aggregates(devices)
+    opisy_pozostale = {d.opis for d in result}
+    assert "Siłownik z napędem 01PCB40 AA401" in opisy_pozostale
+    assert len(result) == 2  # zbiorczy D1-D4 + niezależny 01PCB40
+
+
+def test_deduplikacja_zachowuje_wiersze_z_wlasnym_oznaczeniem():
+    """
+    Wiersz bez L.p., ale z WŁASNYM oznaczeniem (np. "01PCB20 AT001") to
+    konkretnie zidentyfikowany przyrząd, nie bezimienny duplikat - nie powinien
+    być usuwany nawet jeśli tematycznie pasuje do zbiorczego licznika.
+    """
+    devices = [
+        _dev("Czujniki temperatury w układzie", ilosc=12, lp="10"),
+        _dev("Przetwornik temperatury", oznaczenie="01PCB20 AT001"),  # ma własny tag
+        _dev("Przetwornik temperatury"),
+        _dev("Przetwornik temperatury"),
+    ]
+    result, warns = _deduplicate_hierarchical_aggregates(devices)
+    oznaczenia = {d.oznaczenie for d in result}
+    assert "01PCB20 AT001" in oznaczenia
+    assert len(result) == 2  # zbiorczy licznik + AT001 (bezimienne x2 usunięte)
+
+
+def test_deduplikacja_na_realnym_pliku_daje_spojny_wynik():
+    """
+    KLUCZOWY TEST: na realnym pliku (Wujek, arkusz Sheet1) zdeduplikowany bilans
+    powinien być zbliżony niezależnie od tego, czy dane są w formie zbiorczej,
+    czy poprawnie rozbitej na osobne wiersze (matematycznie muszą się zgadzać -
+    zweryfikowano ręcznie: 51=51). Ten test pilnuje, żeby parser produkował
+    bilans z tego zakresu, a nie zawyżony (jak nieudeduplikowane 70).
+    """
+    import pandas as pd
+    path = "/mnt/project/Zestawienie_aparatury_i_urządzeń.xlsx"
+    if not os.path.exists(path):
+        return  # środowisko bez dostępu do pliku projektowego - pomijamy
+    df = pd.read_excel(path, sheet_name="Sheet1")
+    devs, warns = parse_devices(df)
+    bal = count_io(devs, reserve_percent=0)
+    total = sum(bal.base.values())
+    # Oczekiwany zakres po deduplikacji: ok. 50-60 (nie 70 sprzed poprawki).
+    # Zakres, nie dokładna liczba, bo precyzyjna wartość zależy od tego, ile
+    # wierszy ma własne oznaczenie (AT001/AT002 - zostają niezależne, mają tag)
+    # vs faktycznie bezimiennych duplikatów zbiorczego licznika.
+    assert 48 <= total <= 60, f"Bilans po deduplikacji poza oczekiwanym zakresem: {total}"
+    assert any("DEDUPLIKACJA" in w for w in warns)

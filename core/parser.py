@@ -218,7 +218,8 @@ def parse_devices(df: pd.DataFrame) -> tuple[list[Device], list[str]]:
 
         devices.append(dev)
 
-    global_warnings.extend(_detect_possible_double_counting(devices))
+    devices, dedup_warnings = _deduplicate_hierarchical_aggregates(devices)
+    global_warnings.extend(dedup_warnings)
 
     return devices, global_warnings
 
@@ -245,52 +246,122 @@ def _keywords(opis_key: str) -> set[str]:
     return {w for w in opis_key.split() if len(w) >= 5 and w not in stopwords}
 
 
-def _detect_possible_double_counting(devices: list[Device]) -> list[str]:
+# Wzorzec kodu obszaru instalacji, np. "01pcb10", "01pcb40" - format: cyfry+litery+cyfry.
+# Takie kody są SILNIEJSZYM sygnałem przynależności niż ogólne słowa opisowe
+# (np. "siłownik", "napędem"), bo różne obszary instalacji (01PCB10 vs 01PCB40)
+# to RÓŻNE, niezależne urządzenia, nawet jeśli mają identyczny numer tagu (np.
+# oba "AA401") i te same słowa opisowe. Wykryte realnie: "Siłownik z napędem
+# 01PCB10 AA401" (grupa D1-D4) błędnie dopasowany do "Siłownik z napędem
+# 01PCB40 AA401" (inny, niezależny obszar) przez wspólne "siłownik"+"napędem"+
+# przypadkowo powtórzony numer tagu "aa401".
+_AREA_CODE_RE = re.compile(r"^\d{2}[a-z]{2,5}\d{1,3}$")
+
+# Zbyt ogólne słowa techniczne, które same w sobie NIE powinny wystarczać do
+# uznania dwóch urządzeń za tę samą grupę (występują w wielu, różnych typach
+# urządzeń) - wykluczone z dopasowania, chyba że nie ma nic bardziej specyficznego.
+_GENERIC_TECH_WORDS = {"silownik", "napedem", "naped", "urzadzenie", "element"}
+
+
+def _area_codes(opis_key: str) -> set[str]:
+    """Wyciąga kody obszaru instalacji (np. '01pcb10') z klucza opisu."""
+    return {w for w in opis_key.split() if _AREA_CODE_RE.match(w)}
+
+
+def _keywords_specific(opis_key: str) -> set[str]:
+    """Słowa kluczowe BEZ zbyt ogólnych terminów technicznych - do dopasowania precyzyjnego."""
+    return _keywords(opis_key) - _GENERIC_TECH_WORDS
+
+
+# Próg: minimalna liczba tematycznie podobnych "bezimiennych" wierszy, żeby uznać
+# to za wzorzec zbiorczego licznika, a nie przypadkowe podobieństwo dwóch urządzeń.
+_DEDUP_MIN_MATCHES = 2
+
+
+def _deduplicate_hierarchical_aggregates(
+    devices: list[Device],
+) -> tuple[list[Device], list[str]]:
     """
-    Wykrywa PODEJRZANY wzorzec: pozycja z jawną Ilością > 1 sąsiadująca z wieloma
-    pozycjami "bezimiennymi" (bez L.p./oznaczenia, ilość domyślna=1) o TEMATYCZNIE
-    podobnym opisie (wspólne słowo kluczowe, np. "temperatury"/"cisnienia").
-    To może oznaczać, że arkusz ma strukturę hierarchiczną (zbiorczy licznik +
-    wypisane z nazwy egzemplarze tego licznika), a nie płaską listę niezależnych
-    urządzeń - w takim wypadku prosty parser liczy je PODWÓJNIE.
+    Wykrywa i USUWA z liczenia wiersze "bezimienne" (bez L.p./oznaczenia, domyślna
+    ilość=1), które są prawdopodobnie WYPISANYMI Z NAZWY EGZEMPLARZAMI zbiorczej
+    pozycji (wiersz z L.p. i jawną Ilość > 1 o tematycznie zbliżonym opisie).
 
-    Dopasowanie po wspólnych słowach kluczowych, nie po podciągu całego opisu -
-    bo zbiorczy wiersz bywa opisany inną frazą niż wiersze indywidualne (np.
-    "Czujniki temperatury w układzie" [zbiorczy] vs "Przetwornik temperatury"
-    [indywidualne] - różny tekst, ten sam temat).
+    UZASADNIENIE (zweryfikowane matematycznie na realnym pliku): poprawne
+    "rozbicie" zbiorczej pozycji na N osobnych wierszy z ilością 1 daje IDENTYCZNY
+    bilans I/O co pozostawienie jej jako 1 wiersza z ilością N - to tylko dwa
+    zapisy tych samych fizycznych urządzeń. Problem pojawia się, gdy źródło ma
+    OBA zapisy naraz (zbiorczy licznik + częściowa/pełna lista nazwanych
+    egzemplarzy) - wtedy naiwne liczenie każdego wiersza osobno dolicza te same
+    urządzenia dwukrotnie. Ta funkcja usuwa nadmiarowe wiersze "bezimienne",
+    zostawiając jeden, autorytatywny zbiorczy licznik.
 
-    Nie zmienia liczenia (Zero-Hallucination: nie zgadujemy, która interpretacja
-    jest poprawna) - tylko ostrzega inżyniera, żeby zweryfikował ręcznie.
+    AUDYT: nic nie znika po cichu. Usunięcie jest zawsze:
+    - zapisane jako ostrzeżenie globalne z pełną listą usuniętych opisów,
+    - dopisane do pola "uwagi" pozycji zbiorczej, która pozostaje w wyniku.
+    Jeśli interpretacja jest błędna dla konkretnego pliku (bezimienne wiersze
+    faktycznie były dodatkowymi, niezależnymi urządzeniami) - inżynier zobaczy
+    to w ostrzeżeniu i może zgłosić korektę reguły, ale NIE zostanie to
+    przeoczone w milczeniu.
     """
     warnings: list[str] = []
-    from collections import defaultdict
 
-    # Zbierz "bezimienne" wiersze (bez oznaczenia/L.p., domyślna ilość=1) z ich słowami kluczowymi
-    unnamed: list[tuple[set[str], str]] = []  # (słowa_kluczowe, opis_oryginalny)
-    named_aggregates: list[tuple[set[str], int, str]] = []  # (słowa_kluczowe, ilość, opis)
+    aggregates: list[Device] = []
+    unnamed: list[Device] = []
+    other: list[Device] = []
 
     for dev in devices:
-        key = _normalize_opis_key(dev.opis)
-        kws = _keywords(key)
+        kws = _keywords(_normalize_opis_key(dev.opis))
         if not kws:
+            other.append(dev)
             continue
         bez_oznaczenia = not dev.oznaczenie and not dev.lp
         if bez_oznaczenia and dev.ilosc == 1 and not dev.ilosc_flaga:
-            unnamed.append((kws, dev.opis))
-        elif dev.ilosc > 1:
-            named_aggregates.append((kws, dev.ilosc, dev.opis))
+            unnamed.append(dev)
+        elif dev.lp and dev.ilosc > 1:
+            aggregates.append(dev)
+        else:
+            other.append(dev)
 
-    for agg_kws, agg_ilosc, opis_orig in named_aggregates:
-        podobne = sum(1 for kws, _ in unnamed if kws & agg_kws)
-        if podobne >= 2:
+    to_remove: set[int] = set()  # id() obiektów Device do usunięcia
+    for agg in aggregates:
+        agg_key = _normalize_opis_key(agg.opis)
+        agg_areas = _area_codes(agg_key)
+        agg_kws = _keywords_specific(agg_key)
+
+        matches = []
+        for u in unnamed:
+            u_key = _normalize_opis_key(u.opis)
+            u_areas = _area_codes(u_key)
+            if agg_areas or u_areas:
+                # Oba mają kod obszaru -> muszą się zgadzać DOKŁADNIE (silny sygnał).
+                # Jeden ma kod, drugi nie -> traktujemy jako niedopasowanie (bezpieczniej
+                # nie łączyć, niż fałszywie połączyć różne obszary instalacji).
+                if agg_areas and u_areas and (agg_areas & u_areas):
+                    matches.append(u)
+                continue
+            # Żadne nie ma kodu obszaru -> dopasowanie po specyficznych słowach kluczowych
+            u_kws = _keywords_specific(u_key)
+            if u_kws & agg_kws:
+                matches.append(u)
+
+        if len(matches) >= _DEDUP_MIN_MATCHES:
+            removed_opisy = [m.opis for m in matches]
+            for m in matches:
+                to_remove.add(id(m))
             warnings.append(
-                f"⚠ MOŻLIWE PODWÓJNE LICZENIE: pozycja „{opis_orig}” ma ilość={agg_ilosc}, "
-                f"a w arkuszu jest {podobne} osobnych, bezimiennych wierszy o zbliżonym temacie. "
-                f"Jeśli to te same fizyczne urządzenia wypisane z nazwy (nie dodatkowe) - "
-                f"bilans I/O jest zawyżony. Zweryfikuj ręcznie przed generowaniem oferty."
+                f"ℹ AUTOMATYCZNA DEDUPLIKACJA: pozycja „{agg.opis}” (Ilość={agg.ilosc}) "
+                f"reprezentuje {len(matches)} wypisanych z nazwy wierszy poniżej "
+                f"({', '.join(removed_opisy[:5])}{'...' if len(removed_opisy) > 5 else ''}) "
+                f"- wykluczono je z osobnego liczenia, żeby nie dublować sygnałów I/O. "
+                f"Jeśli to były jednak NIEZALEŻNE, dodatkowe urządzenia (nie egzemplarze "
+                f"tego licznika) - zgłoś korektę, bilans byłby wtedy zaniżony."
+            )
+            agg.uwagi = (agg.uwagi + " | " if agg.uwagi else "") + (
+                f"Zawiera {len(matches)} wypisanych z nazwy egzemplarzy: "
+                f"{', '.join(removed_opisy[:5])}{'...' if len(removed_opisy) > 5 else ''}"
             )
 
-    return warnings
+    result = [d for d in devices if id(d) not in to_remove]
+    return result, warnings
 
 
 def _attach_signals(dev: Device, analog_raw: str, cyfrowy_raw: str) -> None:
@@ -422,7 +493,8 @@ def parse_ai_devices(records: list[dict]) -> tuple[list[Device], list[str]]:
                 f"zamiast zestawienia urządzeń."
             )
 
-        global_warnings.extend(_detect_possible_double_counting(devices))
+        devices, dedup_warnings = _deduplicate_hierarchical_aggregates(devices)
+        global_warnings.extend(dedup_warnings)
 
     return devices, global_warnings
 
