@@ -1,0 +1,266 @@
+# Panel Inżyniera AKPiA — Krok 1: Rdzeń deterministyczny
+
+Czysty rozdział AI ↔ Python. AI ekstrahuje surową listę urządzeń;
+cały dobór i zliczanie robi Python w `core/`. Zero zależności od Streamlit
+i od API — moduły uruchamiasz i testujesz samodzielnie.
+
+## Struktura
+
+```
+core/
+  signal_rules.py   # słownik DI/DO/AI/AO (Start→DO, Awaria→DI, jawny (AO) ma priorytet)
+  device_rules.py   # słownik typów urządzeń → domyślne sygnały (gdy kolumny puste)
+  parser.py         # parser prostego formatu, mapuje kolumny PO NAZWIE, obsługuje brudy
+  io_counter.py     # zliczanie I/O + rezerwa (math.ceil, zawsze w górę)
+tests/
+  test_core.py      # 16 testów jednostkowych
+asix_cennik.csv     # realny fragment cennika ASIX (z Info handlowe 3/2026)
+```
+
+## Jak uruchomić
+
+```bash
+# Parser na Twoim pliku:
+python -m core.parser "Zestawienie_aparatury_i_urządzeń.xlsx"
+
+# Bilans I/O (arg2 = rezerwa %, arg3 = numer arkusza):
+python -m core.io_counter "Zestawienie_aparatury_i_urządzeń.xlsx" 30 0
+
+# Testy:
+python -m pytest tests/ -v        # jeśli masz pytest
+```
+
+## Zasady zaszyte w kodzie (audytowalne)
+
+1. **Sygnał jawny w kolumnie > reguła typu urządzenia.** Reguła typu włącza się
+   tylko, gdy kolumny sygnałów są puste. Każdy taki sygnał ma `source="typ_urzadzenia"`
+   i trafia do ostrzeżeń „do weryfikacji".
+2. **Nie zgadujemy.** Sygnał, którego słownik nie rozpoznał → `BRAK DANYCH`,
+   liczony osobno, NIE wchodzi do DI/DO/AI/AO.
+3. **Rezerwa zawsze w górę:** `ceil(baza * (1 + r/100))`, osobno na typ.
+4. **Kolumny mapowane po nazwie** — odporność na przesunięcia i różnice nagłówków.
+
+## Wynik na realnym pliku (arkusz „Sheet1”, rezerwa 30%)
+
+| Typ | Baza | +Rezerwa |
+|-----|------|----------|
+| DI  | 10   | 13       |
+| DO  | 15   | 20       |
+| AI  | 34   | 45       |
+| AO  | 11   | 15       |
+
+Źródło: 51 z kolumn, 19 z reguły typu urządzenia, 1 pozycja BRAK DANYCH
+(impuls energii ciepłomierzy — do decyzji inżyniera).
+
+## Integracja z app.py — ZROBIONE (Krok 1b)
+
+`app.py` przebudowany. AI już NIE generuje BOM/doboru. Nowy przepływ:
+
+1. **AI zwraca tylko JSON** z listą urządzeń (`core/ai_contract.py` — nowy prompt + parser odpowiedzi).
+2. `parse_ai_devices()` (JSON) lub `parse_devices()` (Excel) → lista Device.
+3. `count_io(devices, reserve)` → bilans I/O.
+4. **Sekcja HITL**: tabela urządzeń z kolumną „Źródło" (kolumna vs typ_urzadzenia),
+   metryki bilansu I/O, ostrzeżenia BRAK DANYCH — do weryfikacji przez inżyniera.
+5. Pobranie: raport Word (bilans I/O + uwagi) i Excel (2 zakładki: urządzenia, bilans).
+6. Historia zapisywana jako **snapshot JSON** (audytowalny, odtwarzalny).
+
+Dwie ścieżki w UI:
+- **„Policz I/O z Excela (bez AI)"** — parsuje arkusz bezpośrednio rdzeniem, działa offline bez klucza API.
+- **„Ekstrahuj przez AI"** — dla PDF/mieszanych źródeł; AI robi tylko ekstrakcję, rdzeń liczy.
+
+### Uruchomienie aplikacji
+```bash
+pip install streamlit pandas openpyxl python-docx google-genai python-dotenv
+streamlit run app.py
+```
+
+## Krok 2 — dobór PLC Beckhoff (ZROBIONE)
+
+`core/plc_beckhoff.py` — dobór sterownika na bilansie I/O (po rezerwie).
+Reguły z realnego projektu DPK2 Wujek. Karty: EL1808(8DI), EL2008(8DO),
+EL3058(8AI), EL4024(4AO) + CX9020-0115, EL6070-0033, EL6021, EL9410, EL9011.
+
+**Walidacja referencyjna:** dobór na I/O z Wujka (80/24/56/16) odtwarza realną
+listwę co do sztuki: 10×EL1808, 3×EL2008, 7×EL3058, 4×EL4024. Test w `tests/`.
+
+Wpięte w app.py: sekcja „Dobór sterownika" w wynikach, tabela w Word,
+zakładka „Sterownik PLC" w Excelu (z grupą rabatową pod moduł budżetowania).
+
+## Model AI (zaktualizowany)
+
+`GEMINI_MODEL = "gemini-3.5-flash"` (poprzedni `-thinking-exp` był przestarzały).
+Ekstrakcja wymusza **tryb JSON ze schematem**: `response_mime_type=application/json`
++ `response_schema` (`build_response_schema()`). Wg dokumentacji Gemini to jedyny
+sposób na gwarancję poprawnego składniowo JSON. Do zmiany na `gemini-3.1-pro`
+wystarczy podmienić stałą, jeśli potrzebujesz mocniejszego rozumowania.
+
+## Test aplikacji (przeprowadzony)
+
+Pełny przepływ na realnym pliku (arkusz RTO): wczytanie → parse → bilans
+(70→93) → dobór PLC → tabela → Word (37KB) → Excel (3 zakładki) → zapis snapshotu.
+Wszystkie kroki przeszły. 24/24 testów jednostkowych PASS.
+
+
+
+---
+_Poprzednia treść (Krok 1) niżej._
+
+
+
+## Krok 3 — dwie platformy PLC + katalog CSV (ZROBIONE)
+
+Dobór PLC przeniesiony na uniwersalny silnik `core/plc_selector.py` czytający
+katalog kart z plików CSV w `katalogi/`:
+- `katalogi/beckhoff_cx.csv` — karty EL (8-kan cyfrowe, walidacja: Wujek)
+- `katalogi/siemens_et200sp.csv` — moduły ET200SP (16-kan cyfrowe, walidacja: Eco Malbork)
+
+**Dodanie platformy/karty = edycja CSV, BEZ zmian w kodzie.** To realizuje
+uniwersalność: każdy przyszły projekt liczony automatycznie, nowe karty dopisujesz
+w arkuszu.
+
+Reguła doboru (wspólna): `liczba modułów = ceil(kanały_po_rezerwie / kanały_na_moduł)`.
+Rezerwa WYŁĄCZNIE z suwaka % (nie dokładamy modułów). Przy 30% dobór Siemensa
+odtwarza realny projekt Malbork co do modułu (3 DI / 2 DO / 2 AI / 2 AO).
+
+**Wybór platformy** w panelu bocznym (Beckhoff CX / Siemens ET200SP). Raport Word
+i Excel automatycznie pod wybraną platformę.
+
+Uwaga do BaseUnit (ET200SP): reguła uproszczona (1 jasny + reszta ciemne).
+Realny podział na grupy potencjałowe (więcej jasnych) to głębsza wiedza projektowa
+— suma podstawek jest poprawna, podział jasny/ciemny do ewentualnego dopracowania.
+
+Format wejściowy: TYLKO Excel (.xlsx/.xls). CSV świadomie nieobsługiwany.
+
+Model AI: gemini-3.5-flash. Testów jednostkowych: 29/29 PASS.
+
+## Rozszerzone testy — walidacja na dodatkowych plikach
+
+**Ważna korekta metodologiczna:** wcześniejsze liczenie złączek w BOM-ach
+(przez `uniq -c` na wierszach tekstu) było błędne — każdy wiersz BOM ma
+kolumnę ilości (np. "64 szt PT 4-HESI"), a nie zawsze jest to "1 szt" x64
+wierszy. Po poprawce regexu na sumowanie kolumny ilości, dane z Wujka
+pozostały bez zmian, ale ujawniły się poprawne dane z DPK1 Niwka.
+
+**Walidacja szafy na DRUGIM, niezależnym projekcie (DPK1 Niwka):**
+Reguły wyprowadzone z Wujka przetestowano na zupełnie innym BOM (DPK1).
+Błąd rośnie z 0-12% (Wujek, źródło reguł) do 7-33% (DPK1, walidacja
+niezależna) — to normalne i oczekiwane przy generalizacji reguły z jednego
+przykładu. Testy dokumentują rzeczywisty zakres niepewności, nie ukrywają go.
+
+**OFE_381 — format z kolumnami Napęd?/Pomiar?:**
+- Parser poprawnie wczytuje plik mimo dodatkowych kolumn (mapowanie po nazwie działa).
+- ODKRYCIE: w całym pliku (124 wiersze) kolumny sygnałów są w 100% puste —
+  wszystkie sygnały pochodzą z reguły typu urządzenia. Każda pozycja wymaga
+  weryfikacji inżyniera.
+- ZNANA GRANICA: kolumna "Pomiar? lokalny/zdalny" (39 par w pełnym pliku)
+  nie jest rozpoznawana przez prosty format — "lokalny" (wskaźnik na
+  obiekcie, bez transmisji do PLC) liczy się tak samo jak "zdalny" (sygnał
+  AI). To może zawyżać bilans AI dla tego typu plików. Udokumentowane
+  świadomie, zgodnie z wcześniejszą decyzją o prostym formacie wejściowym.
+
+Testy używają lekkiej próbki `tests/fixtures/ofe381_sample.xlsx` (14 wierszy
+wyciętych z realnego pliku), więc działają niezależnie od dostępu do
+oryginalnej dokumentacji projektowej — **46 testów, wszystkie przechodzą
+w pełnej izolacji**.
+
+## Publikacja jako open source / hosting na Streamlit Cloud
+
+**Przed pierwszym `git init` / `git push` przeczytaj to w całości.**
+
+### Co jest chronione przez `.gitignore` (i dlaczego)
+
+| Plik/folder | Dlaczego wrażliwy |
+|---|---|
+| `.env` | Klucz API Gemini i hasło dostępu do panelu |
+| `cennik.csv` | Realne ceny katalogowe i rabaty firmowe — dane handlowe |
+| `historia_projektow/`, `outputs/` | Mogą zawierać dane konkretnych klientów/projektów |
+
+Do repo trafia **`cennik_szablon.csv`** — te same 62 pozycje, ale bez cen.
+Aplikacja startuje z nim od razu po sklonowaniu (kosztorys pokaże "BRAK CENY"),
+a każdy, kto ją wdraża u siebie, uzupełnia własny `cennik.csv` lokalnie.
+
+### Checklist przed `git push` do publicznego repo
+
+1. **Sprawdź, co git widzi jako nowe pliki:**
+   ```bash
+   git status
+   ```
+   Upewnij się, że NIE ma na liście: `.env`, `cennik.csv`, plików w
+   `historia_projektow/` ani `outputs/` (poza `.gitkeep`).
+
+2. **Jeśli używasz `git add .`, zweryfikuj przed commitem:**
+   ```bash
+   git add .
+   git status   # jeszcze raz - co faktycznie trafi do commita
+   ```
+
+3. **Skopiuj `.env.example` do `.env` i uzupełnij WŁASNYMI wartościami**
+   (ten krok jest lokalny, `.env` nigdy nie trafia do repo):
+   ```bash
+   cp .env.example .env
+   # edytuj .env: APP_PASSWORD=..., GEMINI_API_KEY=...
+   ```
+
+4. **Na Streamlit Cloud (albo innym hostingu)** klucz API i hasło ustawia się
+   przez panel sekretów hostingu (np. Streamlit Cloud → Settings → Secrets),
+   NIE przez wgranie pliku `.env` do repo. Format w Streamlit Cloud to
+   `.streamlit/secrets.toml` — też jest w `.gitignore`, ustawiasz go
+   bezpośrednio w panelu hostingu, nie commitujesz.
+
+### Jeśli coś wrażliwego już trafiło do repo
+
+Samo dopisanie do `.gitignore` NIE usuwa plików już zacommitowanych —
+zostają w historii git, nawet jeśli usuniesz je w nowym commicie. Jeśli
+`cennik.csv` z cenami albo `.env` trafiły kiedyś do commita (szczególnie
+jeśli repo było już push'nięte publicznie):
+```bash
+git rm --cached cennik.csv
+git commit -m "Usunięcie danych wrażliwych z repo"
+```
+To zatrzymuje śledzenie na przyszłość, ale **nie czyści historii**. Jeśli
+repo było już publiczne, traktuj klucz API jako ujawniony — wygeneruj nowy
+w Google AI Studio. Do trwałego czyszczenia historii służy `git filter-repo`
+(zaawansowane, nieodwracalne — nie rób tego bez pewności co robisz).
+
+## Korekty wg odpowiedzi przełożonego (po urlopie)
+
+**Klasyfikacja sygnałów — poprawka zaworu regulacyjnego:**
+Poprzednia reguła (AO + 2×DI) pomijała sprzężenie zwrotne pozycji.
+Poprawiono wg wytycznej: **AO + AI + opcjonalnie 2×DI**. Zawór regulacyjny
+ma zarówno sterowanie (AO), jak i sygnał zwrotny rzeczywistej pozycji
+siłownika (AI) — to różni go od zaworu ON/OFF (tylko DO+2DI, bez analogów).
+Pozostałe reguły (pompa z falownikiem, zawór odcinający, przetwornik,
+przepływomierz) potwierdzone jako zgodne z praktyką firmy.
+
+**S7-1200:** NIE dodany do listy platform — przełożony szuka realnego
+projektu jako wzorca, decyzja odłożona do czasu, aż się znajdzie.
+
+**Reguły złączek w szafie:** potwierdzone jako wystarczające przybliżenie
+("zostawmy 1 na 1") — świadoma akceptacja uproszczenia.
+
+**HMI — nowy moduł, osobny od SCADA (`core/hmi.py`):**
+Zgodnie z wytyczną "HMI osobno, ASIX osobno" — dodano sekcję 6 w interfejsie
+z manualnym dodawaniem paneli operatorskich (model + ilość + lokalizacja).
+Wybór manualny, nie automatyczny dobór — jedyny znaleziony przykład HMI
+(Malbork) był dostarczany przez producenta kotła, brak zwalidowanego
+wzorca firmy do naśladowania (podobna sytuacja jak S7-1200). HMI trafia
+do raportu Word (tabela) i zakładki "HMI" w Excelu, wliczane do kosztorysu.
+
+Interfejs ma teraz **11 sekcji**, Excel **9 zakładek**. **56 testów, wszystkie
+przechodzą.**
+
+## Wybór arkusza przy wgrywaniu Excela
+
+Naprawiono realne źródło pomyłki: pliki z wieloma arkuszami (np.
+`Zestawienie_aparatury_i_urządzeń.xlsx` ma "Sheet1 (2)" i "Sheet1") wcześniej
+były czytane po cichu z pierwszego arkusza — łatwo było pomylić, który zestaw
+danych faktycznie się analizuje.
+
+Teraz: jeśli wgrany plik ma więcej niż jeden arkusz, pojawia się selectbox
+"Arkusz do wczytania" z pełną listą zakładek. Nazwa wybranego arkusza trafia
+też do etykiety projektu (nazwy plików wynikowych) — dwa raporty z tego
+samego pliku, ale różnych zakładek, nie będą już miały identycznej nazwy.
+
+Zweryfikowano na realnym pliku: arkusz domyślny (pierwszy) daje bilans
+DI=8/DO=4/AI=24/AO=10 (po rezerwie 30%), arkusz "Sheet1" (drugi) daje
+DI=13/DO=20/AI=45/AO=15 — oba poprawnie dostępne przez wybór w interfejsie.

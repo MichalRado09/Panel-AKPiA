@@ -1,0 +1,79 @@
+# ============================================================
+# .gitignore — Panel Inżyniera AKPiA
+# ============================================================
+# WAŻNE: ten plik chroni dane wrażliwe przed przypadkowym wysłaniem
+# do publicznego repozytorium. Przed pierwszym `git push` do publicznego
+# repo sprawdź `git status`, że żaden z poniższych plików nie jest
+# "tracked" (jeśli już był dodany wcześniej, patrz sekcja na końcu pliku).
+
+# --- SEKRETY: klucze API, hasła ---
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.key
+*.pem
+
+# --- DANE BIZNESOWE FIRMY (ceny, rabaty, cenniki zakupowe) ---
+# cennik.csv zawiera realne ceny katalogowe i strukturę rabatów firmy —
+# to dane handlowe, nie kod. Do repo trafia tylko cennik_szablon.csv
+# (te same kolumny, bez wypełnionych cen).
+cennik.csv
+
+# --- DANE KLIENTÓW / PROJEKTÓW (historia analiz, wygenerowane oferty) ---
+# Snapshoty JSON i wygenerowane pliki mogą zawierać nazwy klientów,
+# parametry ich instalacji, wyceny — nie powinny trafiać do publicznego repo.
+# (.gitkeep zachowuje pustą strukturę folderów w repo, żeby app.py miał
+# gdzie zapisywać pliki od razu po sklonowaniu — os.makedirs() i tak by
+# je utworzył, ale .gitkeep czyni to jawnym w repo).
+historia_projektow/*
+!historia_projektow/.gitkeep
+outputs/*
+!outputs/.gitkeep
+
+# --- PLIKI PROJEKTOWE KLIENTÓW (schematy, zestawienia, dokumentacja) ---
+# Jeśli w trakcie pracy testujesz na prawdziwych plikach klientów (zestawienia
+# urządzeń, schematy PDF), trzymaj je w tym katalogu — nie trafi do repo.
+# Nie blokujemy WSZYSTKICH .xlsx/.pdf globalnie, żeby nie zaskakiwać przy
+# dodawaniu legalnych plików przykładowych — tylko ten jeden katalog roboczy.
+dane_testowe/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# --- Streamlit ---
+.streamlit/
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# ============================================================
+# UWAGA — jeśli pliki z listy wyżej były JUŻ dodane do repo:
+# ============================================================
+# Samo dopisanie do .gitignore NIE usuwa plików już wcześniej
+# zacommitowanych (i widocznych w historii git!). Jeśli cennik.csv
+# albo .env trafiły kiedyś do commita:
+#
+#   git rm --cached cennik.csv
+#   git rm --cached -r historia_projektow/
+#   git commit -m "Usunięcie danych wrażliwych z repo"
+#
+# To usuwa plik z PRZYSZŁYCH commitów, ale NIE z historii. Jeśli klucz
+# API lub ceny trafiły już do publicznego repo (nawet w starym commicie),
+# traktuj je jako ujawnione: zmień klucz API w Google AI Studio i/lub
+# poproś przełożonego o rotację cen/rabatów, jeśli mają charakter poufny.
+# Do trwałego wyczyszczenia historii służy `git filter-repo` — to
+# osobna, nietrywialna operacja, zapytaj zanim ją wykonasz.

@@ -1,0 +1,12 @@
+typ;nr_katalogowy;opis;kanaly;rola;grupa_rabatowa
+CPU;6ES7512-1DM03-0AB0;CPU 1512SP-1 PN;;systemowy;SIEMENS
+ETH;6GK7542-6UX00-0XE0;Moduł Ethernet CP;;systemowy;SIEMENS
+SERIAL;6ES7137-6AA01-0BA0;Moduł komunikacji szeregowej;;systemowy;SIEMENS
+DI;6ES7131-6BH01-0BA0;Moduł wejść binarnych 16x DI 24V DC;16;io;SIEMENS
+DO;6ES7132-6BH01-0BA0;Moduł wyjść binarnych 16x DO 24V DC;16;io;SIEMENS
+AI;6ES7134-6HD01-0BA1;Moduł wejść analogowych 4x AI;4;io;SIEMENS
+AO;6ES7135-6HD00-0BA1;Moduł wyjść analogowych 4x AO;4;io;SIEMENS
+BUSADAPTER;6ES7193-6AR00-0AA0;Bus Adapter 2x RJ45;;systemowy;SIEMENS
+SDCARD;6ES7954-8LE03-0AA0;Karta pamięci SD 12MB;;systemowy;SIEMENS
+BASEUNIT_LIGHT;6ES7193-6BP00-0DA0;Podstawka BaseUnit (jasna, z zasilaniem);;montaz;SIEMENS
+BASEUNIT_DARK;6ES7193-6BP20-0BA0;Podstawka BaseUnit (ciemna, mostkująca);;montaz;SIEMENS

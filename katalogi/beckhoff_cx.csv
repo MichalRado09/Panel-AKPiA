@@ -1,0 +1,10 @@
+typ;nr_katalogowy;opis;kanaly;rola;grupa_rabatowa
+CPU;CX9020-0115;Embedded PC Beckhoff (CPU);;systemowy;BECKHOFF
+LICENSE;EL6070-0033;Klucz licencyjny TwinCAT;;systemowy;BECKHOFF
+SERIAL;EL6021;Interfejs szeregowy RS422/485;;systemowy;BECKHOFF
+DI;EL1008;8x wejście cyfrowe 24V DC;8;io;BECKHOFF
+DO;EL2008;8x wyjście cyfrowe 24V DC 0.5A;8;io;BECKHOFF
+AI;EL3058;8x wejście analogowe 0/4-20mA;8;io;BECKHOFF
+AO;EL4024;4x wyjście analogowe 4-20mA;4;io;BECKHOFF
+BUSPSU;EL9410;Zasilacz E-bus (odświeżenie magistrali);;montaz;BECKHOFF
+ENDCAP;EL9011;Pokrywa końcowa magistrali E-bus;;montaz;BECKHOFF
