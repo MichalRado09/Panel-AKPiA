@@ -90,6 +90,17 @@ pomiarowe (czujnik temperatury, ciśnienia, przepływu), ale BEZ jawnie podanego
 sygnału - zostaw pola analog/cyfrowy puste. Program sam przypisze AI na podstawie
 typu urządzenia. NIE wymyślaj sygnałów, których nie ma w źródle.
 
+KRYTYCZNA ZASADA - NIE POMIJAJ WIERSZY BEZ NUMERU L.P.:
+W realnych zestawieniach WIELE wierszy nie ma wypełnionego numeru L.p. ani
+oznaczenia projektowego - to są kolejne, odrębne urządzenia tego samego typu
+(np. druga, trzecia, czwarta "Przetwornik temperatury" pod rząd), a NIE
+kontynuacja/duplikat wiersza powyżej. KAŻDY wiersz z wypełnionym polem
+"Typ / Opis odbiornika" to OSOBNE urządzenie do wyekstrahowania, niezależnie
+od tego, czy ma numer L.p., układ czy oznaczenie. Puste L.p. NIE oznacza
+"pomiń ten wiersz" - oznacza tylko, że w tym konkretnym wierszu tych pól nie
+podano. Licz i ekstrahuj WSZYSTKIE wiersze z opisem urządzenia, nawet jeśli
+wygląda na powtórzenie poprzedniego typu.
+
 CO EKSTRAHUJESZ - dla każdego urządzenia OBIEKTOWEGO wypełnij pola:
 - lp: numer porządkowy (jeśli jest)
 - uklad: nazwa układu/obszaru (np. "RTO", "AKPiA")
