@@ -57,6 +57,10 @@ class Device:
     opis: str = ""
     ilosc: int = 1
     ilosc_flaga: str = ""          # np. "min." gdy w pliku było "min. 10"
+    # Czy ŹRÓDŁO jawnie podało ilość, czy parser przyjął domyślną 1.
+    # Krytyczne dla deduplikacji: wiersz bez L.p. I bez jawnej Ilości to
+    # wiersz szczegółowy, nawet jeśli ma wypełnione oznaczenie projektowe.
+    ilosc_podana: bool = False
     moc_kw: float | None = None
     napiecie: str = ""
     komunikacja: str = ""
@@ -96,6 +100,17 @@ def _parse_quantity(raw) -> tuple[int, str, list[str]]:
         return 1, flag, [f"Nie rozpoznano liczby w ilości '{s}' - przyjęto 1"]
 
     return int(m_num.group(1)), flag, warnings
+
+
+def _has_quantity(raw) -> bool:
+    """
+    Czy źródło JAWNIE podało ilość? Odróżnia pustą komórkę (False) od jawnej
+    jedynki (True). Ta różnica decyduje, czy wiersz jest pozycją samodzielną,
+    czy wierszem szczegółowym rozpisującym pozycję zbiorczą.
+    """
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return False
+    return str(raw).strip() not in {"", "?", "-"}
 
 
 def _parse_power(raw) -> tuple[float | None, list[str]]:
@@ -202,9 +217,11 @@ def parse_devices(df: pd.DataFrame) -> tuple[list[Device], list[str]]:
         dev.komunikacja = _clean(row.get(col_map.get("komunikacja", ""), ""))
         dev.uwagi = _clean(row.get(col_map.get("uwagi", ""), ""))
 
-        qty, flag, qty_warn = _parse_quantity(row.get(col_map.get("ilosc", ""), None))
+        raw_qty = row.get(col_map.get("ilosc", ""), None)
+        qty, flag, qty_warn = _parse_quantity(raw_qty)
         dev.ilosc = qty
         dev.ilosc_flaga = flag
+        dev.ilosc_podana = _has_quantity(raw_qty)
         dev.warnings.extend(qty_warn)
 
         moc, moc_warn = _parse_power(row.get(col_map.get("moc", ""), None))
@@ -313,8 +330,14 @@ def _deduplicate_hierarchical_aggregates(
         if not kws:
             other.append(dev)
             continue
-        bez_oznaczenia = not dev.oznaczenie and not dev.lp
-        if bez_oznaczenia and dev.ilosc == 1 and not dev.ilosc_flaga:
+        # Wiersz szczegółowy = brak L.p. ORAZ brak jawnie podanej Ilości.
+        # Wypełnione 'oznaczenie' NIE dyskwalifikuje: w realnych zestawieniach
+        # wiersze rozpisujące pozycję zbiorczą często mają tag projektowy
+        # (np. "01PCB20 AT001"), a mimo to są egzemplarzami tej pozycji, nie
+        # dodatkowymi urządzeniami. Poprzednie kryterium (not oznaczenie)
+        # przepuszczało je do osobnego liczenia -> zawyżony bilans I/O.
+        wiersz_szczegolowy = not dev.lp and not dev.ilosc_podana
+        if wiersz_szczegolowy and dev.ilosc == 1 and not dev.ilosc_flaga:
             unnamed.append(dev)
         elif dev.lp and dev.ilosc > 1:
             aggregates.append(dev)
@@ -345,9 +368,13 @@ def _deduplicate_hierarchical_aggregates(
 
         if len(matches) >= _DEDUP_MIN_MATCHES:
             removed_opisy = [m.opis for m in matches]
+            # Wiersze z wypełnionym tagiem projektowym wymagają uważniejszej
+            # weryfikacji - tag sugeruje, że projektant traktował je jako
+            # konkretne, zidentyfikowane urządzenia.
+            z_tagiem = [m.oznaczenie for m in matches if m.oznaczenie]
             for m in matches:
                 to_remove.add(id(m))
-            warnings.append(
+            komunikat = (
                 f"ℹ AUTOMATYCZNA DEDUPLIKACJA: pozycja „{agg.opis}” (Ilość={agg.ilosc}) "
                 f"reprezentuje {len(matches)} wypisanych z nazwy wierszy poniżej "
                 f"({', '.join(removed_opisy[:5])}{'...' if len(removed_opisy) > 5 else ''}) "
@@ -355,6 +382,15 @@ def _deduplicate_hierarchical_aggregates(
                 f"Jeśli to były jednak NIEZALEŻNE, dodatkowe urządzenia (nie egzemplarze "
                 f"tego licznika) - zgłoś korektę, bilans byłby wtedy zaniżony."
             )
+            if z_tagiem:
+                komunikat += (
+                    f" ⚠ UWAGA: {len(z_tagiem)} z usuniętych wierszy miało wypełniony "
+                    f"tag projektowy ({', '.join(z_tagiem[:5])}"
+                    f"{'...' if len(z_tagiem) > 5 else ''}) - to mocniejsza przesłanka, "
+                    f"że mogą być osobnymi urządzeniami. ZWERYFIKUJ ten przypadek "
+                    f"w dokumentacji źródłowej."
+                )
+            warnings.append(komunikat)
             agg.uwagi = (agg.uwagi + " | " if agg.uwagi else "") + (
                 f"Zawiera {len(matches)} wypisanych z nazwy egzemplarzy: "
                 f"{', '.join(removed_opisy[:5])}{'...' if len(removed_opisy) > 5 else ''}"
@@ -421,9 +457,14 @@ def _device_from_record(rec: dict) -> Device:
     dev.komunikacja = _clean(rec.get("komunikacja", ""))
     dev.uwagi = _clean(rec.get("uwagi", ""))
 
-    qty, flag, qty_warn = _parse_quantity(rec.get("ilosc", None))
+    raw_qty = rec.get("ilosc", None)
+    qty, flag, qty_warn = _parse_quantity(raw_qty)
     dev.ilosc = qty
     dev.ilosc_flaga = flag
+    # AI zwraca null, gdy komórka źródłowa była pusta (patrz ai_contract).
+    # Ta sama semantyka co _has_quantity() w ścieżce Excel - to gwarantuje,
+    # że deduplikacja zadziała identycznie niezależnie od źródła danych.
+    dev.ilosc_podana = _has_quantity(raw_qty)
     dev.warnings.extend(qty_warn)
 
     # moc_kw może już przyjść jako liczba z JSON

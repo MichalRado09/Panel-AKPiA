@@ -749,11 +749,11 @@ def test_deduplikacja_nie_miesza_roznych_obszarow_instalacji():
     assert len(result) == 2  # zbiorczy D1-D4 + niezależny 01PCB40
 
 
-def test_deduplikacja_zachowuje_wiersze_z_wlasnym_oznaczeniem():
+def test_deduplikacja_usuwa_podpozycje_nawet_z_wlasnym_oznaczeniem():
     """
-    Wiersz bez L.p., ale z WŁASNYM oznaczeniem (np. "01PCB20 AT001") to
-    konkretnie zidentyfikowany przyrząd, nie bezimienny duplikat - nie powinien
-    być usuwany nawet jeśli tematycznie pasuje do zbiorczego licznika.
+    Zgodnie z nową logiką, wiersz bez L.p. i Ilości jest traktowany jako szczegółowy
+    (duplikat) nawet jeśli ma własny tag (oznaczenie). Zapobiega to dublowaniu I/O,
+    gdy projektant rozpisuje zbiorczą pozycję na poszczególne sztuki z tagami.
     """
     devices = [
         _dev("Czujniki temperatury w układzie", ilosc=12, lp="10"),
@@ -762,9 +762,14 @@ def test_deduplikacja_zachowuje_wiersze_z_wlasnym_oznaczeniem():
         _dev("Przetwornik temperatury"),
     ]
     result, warns = _deduplicate_hierarchical_aggregates(devices)
+    
     oznaczenia = {d.oznaczenie for d in result}
-    assert "01PCB20 AT001" in oznaczenia
-    assert len(result) == 2  # zbiorczy licznik + AT001 (bezimienne x2 usunięte)
+    
+    # Sprawdzamy, czy tag faktycznie zniknął (został wchłonięty przez pozycję zbiorczą)
+    assert "01PCB20 AT001" not in oznaczenia
+    
+    # Zostaje TYLKO 1 wiersz: zbiorczy licznik (Ilość=12)
+    assert len(result) == 1
 
 
 def test_deduplikacja_na_realnym_pliku_daje_spojny_wynik():

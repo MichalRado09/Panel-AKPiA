@@ -34,6 +34,19 @@ JSON_SCHEMA_HINT = """
       "cyfrowy": "Start, Praca, Awaria",
       "komunikacja": "",
       "uwagi": ""
+    },
+    {
+      "lp": "",
+      "uklad": "",
+      "oznaczenie": "",
+      "opis": "Przetwornik temperatury",
+      "ilosc": null,
+      "moc_kw": null,
+      "napiecie": "",
+      "analog": "",
+      "cyfrowy": "",
+      "komunikacja": "",
+      "uwagi": ""
     }
   ]
 }
@@ -90,40 +103,48 @@ pomiarowe (czujnik temperatury, ciśnienia, przepływu), ale BEZ jawnie podanego
 sygnału - zostaw pola analog/cyfrowy puste. Program sam przypisze AI na podstawie
 typu urządzenia. NIE wymyślaj sygnałów, których nie ma w źródle.
 
-ZASADA - WIERSZE BEZ NUMERU L.P.:
-W realnych zestawieniach wiele wierszy nie ma wypełnionego numeru L.p. ani
-oznaczenia projektowego. Zanim je zliczysz, rozróżnij DWIE możliwe sytuacje:
+ZASADA NADRZĘDNA - WIERNOŚĆ 1:1 (KRYTYCZNA DLA POWTARZALNOŚCI WYNIKÓW):
+Twoim zadaniem jest WIERNE PRZEPISANIE danych, a NIE ich interpretacja.
+Program porównuje Twój wynik z wynikiem parsera deterministycznego czytającego
+ten sam plik - jeśli cokolwiek pominiesz, połączysz albo uzupełnisz od siebie,
+oba wyniki się rozjadą i oferta będzie niewiarygodna.
 
-(A) To są kolejne, NIEZALEŻNE urządzenia tego samego typu, po prostu bez
-    numeracji w źródle. Licz każdy jako osobną pozycję.
+Dlatego BEZWZGLĘDNIE:
+- JEDEN WIERSZ ŹRÓDŁOWY = JEDEN REKORD JSON. Zawsze, bez wyjątków.
+- NIE POMIJAJ wierszy, nawet jeśli wyglądają na powtórzenie, uszczegółowienie
+  albo rozpisanie pozycji zbiorczej. Program ma własną, deterministyczną
+  regułę wykrywania takich sytuacji - Ty masz mu dostarczyć KOMPLET danych.
+- NIE ŁĄCZ kilku wierszy w jeden. NIE ROZBIJAJ jednego wiersza na kilka
+  (pozycja "Ilość=12" zostaje JEDNYM rekordem z ilosc=12, nie dwunastoma).
+- NIE SORTUJ i NIE ZMIENIAJ kolejności - zachowaj kolejność ze źródła.
 
-(B) To są WYPISANE Z NAZWY EGZEMPLARZE zbiorczej pozycji, która ma numer L.p.
-    i JAWNIE PODANĄ Ilość > 1. Rozpoznasz to po wzorcu: wiersz z L.p. i np.
-    Ilość=12 o opisie zbiorczym (np. "Czujniki temperatury w układzie",
-    "TI (różne)"), a obok/pod nim kilka osobno nazwanych wierszy bez L.p.
-    o tym samym temacie (np. kolejne "Przetwornik temperatury" z różnymi
-    tagami). W tym wypadku wiersze bez L.p. to DOKUMENTACJA składu tej
-    zbiorczej ilości, NIE dodatkowe urządzenia - liczenie obu naraz
-    PODWOI liczbę fizycznych urządzeń.
+WIERSZE BEZ NUMERU L.P.:
+W realnych zestawieniach wiele wierszy nie ma wypełnionego L.p. ani Ilości.
+Takie wiersze BEZWZGLĘDNIE ekstrahujesz jako osobne rekordy, z pustym "lp"
+i z "ilosc": null. To, czy są niezależnymi urządzeniami, czy rozpisaniem
+pozycji zbiorczej, rozstrzyga PROGRAM - nie Ty. Pusty "lp" i "ilosc": null
+to informacja, której program potrzebuje do podjęcia tej decyzji; jeśli
+wpiszesz tam cokolwiek od siebie, odbierzesz mu tę informację.
 
-Jeśli nie masz pewności, którą sytuację widzisz - NIE zgaduj. Wyekstrahuj
-wiersz zbiorczy (z L.p. i Ilość) jako jedną pozycję, pomiń wiersze bez L.p.
-o tym samym temacie, i w polu "uwagi" tej pozycji zbiorczej napisz:
-"Możliwe wiersze indywidualne tego typu w źródle - zweryfikuj czy Ilość
-nie jest już zsumowana". To jest bezpieczniejsza domyślna interpretacja,
-bo zawyżenie liczby urządzeń (podwójne liczenie) jest gorszym błędem niż
-lekkie zaniżenie, gdy sytuacja jest niejednoznaczna.
+ZAKAZ UZUPEŁNIANIA OZNACZEŃ:
+Pole "oznaczenie" przepisujesz DOKŁADNIE ze źródła. Jeśli komórka jest pusta -
+wstawiasz pusty string "". NIGDY nie nadawaj własnych tagów (np. "D1", "PI-1",
+"TI-a"), nawet jeśli wydają się oczywiste z kontekstu sąsiednich wierszy.
+Wymyślony tag zmienia interpretację wiersza przez program.
 
 CO EKSTRAHUJESZ - dla każdego urządzenia OBIEKTOWEGO wypełnij pola:
 - lp: numer porządkowy (jeśli jest)
 - uklad: nazwa układu/obszaru (np. "RTO", "AKPiA")
 - oznaczenie: oznaczenie projektowe / TAG (np. "P1", "01PCB20 AT001")
 - opis: typ / opis odbiornika (np. "Pompa obiegowa glikolu")
-- ilosc: liczba sztuk (liczba całkowita; jeśli "min. 10" -> wpisz 10)
+- ilosc: liczba sztuk PODANA W ŹRÓDLE. Komórka pusta -> null (NIE 1, NIE zgaduj!).
+         Jeśli "min. 10" -> wpisz 10. Rozróżnienie null vs 1 jest krytyczne:
+         null = "źródło nie podało", 1 = "źródło jawnie podało jedną sztukę".
 - moc_kw: moc w kW jako liczba (jeśli "np. 15,0" -> 15.0; brak -> null)
 - napiecie: napięcie zasilające (np. "400V 50Hz")
-- analog: OPIS sygnału analogowego DOSŁOWNIE ze źródła (np. "Zadawanie prędkości (AO)")
-- cyfrowy: OPIS sygnału cyfrowego DOSŁOWNIE ze źródła (np. "Start, Praca, Awaria")
+- analog: treść komórki sygnału analogowego PRZEPISANA ZNAK W ZNAK, łącznie
+          z myślnikiem "-" jeśli tak jest w źródle (NIE zamieniaj "-" na "").
+- cyfrowy: treść komórki sygnału cyfrowego PRZEPISANA ZNAK W ZNAK, jw.
 - komunikacja: magistrala jeśli podana (np. "Modbus", "Profinet", "M-Bus")
 - uwagi: uwagi ze źródła
 
@@ -156,7 +177,9 @@ def build_response_schema() -> dict:
                         "uklad": {"type": "string"},
                         "oznaczenie": {"type": "string"},
                         "opis": {"type": "string"},
-                        "ilosc": {"type": "integer"},
+                        # nullable: null = "źródło nie podało ilości". Parser
+                        # rozróżnia to od jawnej jedynki przy deduplikacji.
+                        "ilosc": {"type": "integer", "nullable": True},
                         "moc_kw": {"type": "number", "nullable": True},
                         "napiecie": {"type": "string"},
                         "analog": {"type": "string"},
