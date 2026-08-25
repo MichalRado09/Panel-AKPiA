@@ -26,10 +26,6 @@ from core.scada_asix import select_asix
 from core.cabinet import select_cabinet
 from core.device_budget import build_device_budget, device_key, GRUPA_RABATOWA
 from core.extraction_diff import compare_extractions, ExtractionDiff
-from core.diff_explainer import (
-    build_diff_explanation_prompt, build_diff_explanation_schema,
-    parse_diff_explanation, KATEGORIE_PRZYCZYN,
-)
 from core.pdf_report import create_pdf_report
 from core.validator import validate_offer, Severity
 from core.hmi import build_hmi_selection, TYPOWE_PANELE
@@ -206,24 +202,6 @@ def run_extraction(api_key, excel_df, pdf_bytes, excel_filename, pdf_filename) -
                 client.files.delete(name=uploaded_file.name)
             except Exception:
                 pass
-
-
-def run_diff_explanation(api_key: str, diff, pdf_byl_uzyty: bool) -> dict:
-    """
-    Trzecie, opcjonalne wywołanie AI: wyjaśnia PRZYCZYNĘ już wykrytych
-    (deterministycznie, przez core.extraction_diff) różnic między ścieżką
-    offline i AI. Model NIE widzi surowych plików źródłowych na tym etapie -
-    tylko zwięzłą listę różnic. Patrz core/diff_explainer.py.
-    """
-    client = genai.Client(api_key=api_key)
-    model_id = normalize_model_name(GEMINI_MODEL)
-    prompt = build_diff_explanation_prompt(diff, pdf_byl_uzyty=pdf_byl_uzyty)
-
-    raw = call_gemini_with_retry(
-        client, model_id, [prompt], "",
-        response_schema=build_diff_explanation_schema(),
-    )
-    return parse_diff_explanation(raw)
 
 
 # --- 4. GENEROWANIE PLIKÓW (na podstawie zatwierdzonych danych rdzenia) ---
@@ -556,21 +534,11 @@ def render_sidebar():
     return page, {"reserve_percent": reserve_percent, "platforma": platforma, "rabaty": rabaty, "cable_length": cable_length, "asix_factor": asix_factor}
 
 
-_KATEGORIA_ETYKIETY = {
-    "OBECNE_TYLKO_W_PDF": "📄 Tylko w PDF",
-    "MOZLIWA_DEDUPLIKACJA": "🔗 Możliwa deduplikacja",
-    "NARUSZENIE_KONTRAKTU_AI": "⚠ Naruszenie kontraktu AI",
-    "NIEJEDNOZNACZNE_ZRODLO": "❓ Niejednoznaczne źródło",
-    "NIEUSTALONE": "— Nieustalone",
-}
-
-
 def render_extraction_diff_panel() -> None:
     """
     Panel porównania ścieżki OFFLINE i AI - widoczny po użyciu przycisku
     '⚖ Policz + zweryfikuj przez AI'. Pokazuje deterministyczne różnice
-    (core.extraction_diff) i, jeśli dostępne, wyjaśnienie AI przyczyny
-    (core.diff_explainer) - jako pomoc diagnostyczną, NIGDY jako podstawę
+    (core.extraction_diff) jako pomoc diagnostyczną, NIGDY jako podstawę
     do automatycznej zmiany liczb. Wybór, którą wersję zatwierdzić do
     dalszej pracy, zawsze należy do inżyniera (przyciski niżej).
     """
@@ -596,37 +564,12 @@ def render_extraction_diff_panel() -> None:
         delta_cols[i].metric(t, f"{d:+d}" if d != 0 else "0",
                              help="Delta AI minus offline")
 
-    # Mapowanie oznaczenie+opis -> kategoria/uzasadnienie z wyjaśnienia AI (jeśli jest)
-    wyjasnienia_map = {}
-    explanation = st.session_state.get("extraction_diff_explanation")
-    if explanation:
-        for w in explanation.get("wyjasnienia", []):
-            wyjasnienia_map[(w.get("oznaczenie", ""), w.get("opis", ""))] = w
-
-    if explanation and explanation.get("podsumowanie"):
-        st.info(f"💡 AI: {explanation['podsumowanie']}")
-    elif st.session_state.get("extraction_diff_explanation_error"):
-        st.caption(
-            "ℹ Wyjaśnienie AI przyczyny różnic niedostępne "
-            f"({st.session_state.extraction_diff_explanation_error}) — "
-            "poniżej same wykryte różnice, bez automatycznego komentarza."
-        )
-
     def _render_lista(tytul: str, wpisy: list) -> None:
         if not wpisy:
             return
         st.markdown(f"**{tytul} ({len(wpisy)}):**")
         for e in wpisy:
-            wyj = wyjasnienia_map.get((e.oznaczenie, e.opis))
-            if wyj:
-                etykieta = _KATEGORIA_ETYKIETY.get(wyj["kategoria"], wyj["kategoria"])
-                st.markdown(
-                    f"- **{e.oznaczenie}**: {e.opis} (x{e.ilosc}) — {etykieta}  \n"
-                    f"  <span style='color:gray;font-size:0.9em'>{wyj.get('uzasadnienie', '')}</span>",
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(f"- **{e.oznaczenie}**: {e.opis} (x{e.ilosc})")
+            st.markdown(f"- **{e.oznaczenie}**: {e.opis} (x{e.ilosc})")
 
     _render_lista("Tylko w OFFLINE", diff.tylko_w_offline)
     _render_lista("Tylko w AI", diff.tylko_w_ai)
@@ -637,7 +580,8 @@ def render_extraction_diff_panel() -> None:
     )
     if st.session_state.get("devices_ai_alternative") is not None:
         if st.button("🔄 Użyj zamiast tego wyniku AI", use_container_width=False):
-            st.session_state.devices = st.session_state.devices_ai_alternative
+            devices_ai_wybrane = st.session_state.devices_ai_alternative
+            st.session_state.devices = devices_ai_wybrane
             st.rerun()
 
 
@@ -939,8 +883,7 @@ def main():
 
     for key, default in [("api_key_override", ""), ("devices", None),
                          ("project_label", None), ("current_file", (None, None)),
-                         ("extraction_diff", None), ("extraction_diff_explanation", None),
-                         ("extraction_diff_explanation_error", None),
+                         ("extraction_diff", None),
                          ("devices_ai_alternative", None)]:
         if key not in st.session_state:
             st.session_state[key] = default
@@ -987,8 +930,6 @@ def main():
             # Nowy plik -> poprzednie porównanie offline/AI dotyczyło innych
             # danych, więc traci sens i musi zniknąć razem z devices.
             st.session_state.extraction_diff = None
-            st.session_state.extraction_diff_explanation = None
-            st.session_state.extraction_diff_explanation_error = None
             st.session_state.devices_ai_alternative = None
 
         excel_df = None
@@ -1060,22 +1001,6 @@ def main():
 
                         diff = compare_extractions(devices_off, devices_ai)
                         st.session_state.extraction_diff = diff
-                        st.session_state.extraction_diff_explanation = None
-
-                        # Trzecie wywołanie AI TYLKO gdy jest realna różnica - oszczędność
-                        # kosztu/czasu, zgodnie z decyzją: nie pytamy o wyjaśnienie zera.
-                        if diff.ma_roznice:
-                            with st.spinner("Różnice wykryte - AI wyjaśnia przyczynę..."):
-                                try:
-                                    wyjasnienie = run_diff_explanation(
-                                        api_key=api_key, diff=diff,
-                                        pdf_byl_uzyty=pdf_file is not None,
-                                    )
-                                    st.session_state.extraction_diff_explanation = wyjasnienie
-                                except Exception as exc:
-                                    # Wyjaśnienie to dodatek, nie zależność krytyczna - błąd
-                                    # tutaj NIE MOŻE ukryć przed inżynierem samych różnic.
-                                    st.session_state.extraction_diff_explanation_error = str(exc)
 
                         # Domyślnie do dalszej pracy bierzemy wynik OFFLINE (deterministyczny,
                         # bezpieczniejszy domyślny wybór) - inżynier może ręcznie przełączyć

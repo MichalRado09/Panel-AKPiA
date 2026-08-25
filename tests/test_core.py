@@ -57,8 +57,16 @@ def test_analog_nieznany_to_brak_danych():
 # --- device_rules -------------------------------------------------------------
 
 def test_typ_przetwornik_temp():
+    """
+    ZAKTUALIZOWANE: "Przetwornik temperatury" (i "Czujnik temperatury")
+    nie dają już pewnego wyniku - to samo słowo bywa używane różnie
+    w różnych projektach (potwierdzone przez inżyniera nadzorującego).
+    Reguła świadomie zwraca NO_DATA, tak samo jak nierozpoznany sygnał
+    cyfrowy - trafia do balance.undecided, inżynier rozstrzyga ręcznie
+    w tabeli wyników (istniejący mechanizm, bez nowej architektury UI).
+    """
     sig, _ = infer_signals_from_type("Przetwornik temperatury")
-    assert _typy(sig) == ["AI"]
+    assert _typy(sig) == [NO_DATA]
     assert all(s["source"] == "typ_urzadzenia" for s in sig)
 
 
@@ -160,6 +168,12 @@ from core.parser import parse_ai_devices, parse_devices
 
 
 def test_integracja_ai_do_bilansu():
+    """
+    ZAKTUALIZOWANE: "Przetwornik temperatury" bez jawnych sygnałów jest
+    teraz NO_DATA (świadomie niejednoznaczne - patrz test_typ_przetwornik_temp),
+    trafia do balance.undecided, NIE do bal.base["AI"]. Pompa pozostaje
+    jednoznaczna (DO/DI/DI) - to typowy przypadek pompy jednobiegowej.
+    """
     records = [
         {"opis": "Pompa obiegowa", "ilosc": 1, "analog": "Zadawanie prędkości (AO)",
          "cyfrowy": "Start, Praca, Awaria"},
@@ -167,11 +181,14 @@ def test_integracja_ai_do_bilansu():
     ]
     devs, _ = parse_ai_devices(records)
     bal = count_io(devs, reserve_percent=0)
-    # Pompa: AO1 DO1 DI2 ; 3x czujnik: AI3
+    # Pompa: sygnały jawne z kolumn (analog/cyfrowy niepuste) - zawsze wygrywają.
     assert bal.base["AO"] == 1
     assert bal.base["DO"] == 1
     assert bal.base["DI"] == 2
-    assert bal.base["AI"] == 3
+    # Przetwornik: NO_DATA, nie wchodzi do bilansu bazowego, trafia do undecided.
+    assert bal.base["AI"] == 0
+    assert len(bal.undecided) == 1
+    assert bal.undecided[0]["ilosc"] == 3
 
 
 # --- walidacja doboru na projekcie referencyjnym Wujek (przez plc_selector) ---

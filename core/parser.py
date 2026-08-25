@@ -417,7 +417,10 @@ def _attach_signals(dev: Device, analog_raw: str, cyfrowy_raw: str) -> None:
     """
     Przypisuje sygnały do urządzenia wg jednolitej reguły (wspólnej dla Excela i AI-JSON):
       1) sygnały jawne z kolumn (source="kolumna"),
-      2) fallback na typ urządzenia TYLKO gdy kolumny puste (source="typ_urzadzenia"),
+      2) fallback na typ urządzenia TYLKO gdy kolumny puste (source="typ_urzadzenia") -
+         niektóre wzorce dają pewny typ (DI/DO/AI/AO), inne (np. czujnik/przetwornik
+         bez rozstrzygnięcia w źródle - patrz device_rules.py) dają NO_DATA, tak samo
+         jak nierozpoznany sygnał cyfrowy - trafia do balance.undecided,
       3) ostrzeżenia dla BRAK DANYCH i nierozpoznanych typów.
     """
     jawne = []
