@@ -833,3 +833,41 @@ def test_deduplikacja_na_realnym_pliku_daje_spojny_wynik():
     # vs faktycznie bezimiennych duplikatów zbiorczego licznika.
     assert 48 <= total <= 60, f"Bilans po deduplikacji poza oczekiwanym zakresem: {total}"
     assert any("DEDUPLIKACJA" in w for w in warns)
+
+
+# --- records_to_devices: rekonstrukcja projektu z historii ---------------------
+
+from core.parser import devices_to_records, records_to_devices
+
+
+def test_records_to_devices_roundtrip():
+    """
+    devices_to_records() -> JSON -> records_to_devices() musi odtworzyć te
+    same urządzenia (użyte przy wczytywaniu projektu z historii z powrotem
+    do bieżącej analizy - patrz Historia Projektów w app.py). Przechodzi
+    przez json.dumps/loads, bo dokładnie to dzieje się przy zapisie/odczycie
+    snapshotu na dysku - samo Device(**rec) nie wystarczyłoby przetestować
+    kompatybilności typów po serializacji.
+    """
+    import json
+    import pandas as pd
+
+    df = pd.DataFrame([{
+        "L.p.": 1, "Układ": "RTO", "Urządzenie": "P1",
+        "Typ / Opis": "Pompa obiegowa glikolu", "Ilość": 2,
+        "Sygnał Analogowy": "Zadawanie prędkości (AO)",
+        "Sygnał Cyfrowy": "Start, Praca, Awaria",
+    }])
+    devices, _ = parse_devices(df)
+
+    records = json.loads(json.dumps(devices_to_records(devices), ensure_ascii=False))
+    restored = records_to_devices(records)
+
+    assert len(restored) == len(devices) == 1
+    assert restored[0].oznaczenie == devices[0].oznaczenie == "P1"
+    assert restored[0].ilosc == devices[0].ilosc == 2
+    assert restored[0].sygnaly == devices[0].sygnaly
+    bal_original = count_io(devices, reserve_percent=30)
+    bal_restored = count_io(restored, reserve_percent=30)
+    assert bal_original.base == bal_restored.base
+    assert bal_original.reserved == bal_restored.reserved

@@ -458,6 +458,23 @@ def devices_to_records(devices: list[Device]) -> list[dict]:
     return [asdict(d) for d in devices]
 
 
+def records_to_devices(records: list[dict]) -> list[Device]:
+    """
+    Odwrotność devices_to_records() — odtwarza listę Device z PEŁNYCH
+    rekordów (np. snapshotu zapisanego w historia_projektow/), które mają
+    już wyliczone sygnały i ostrzeżenia (dokładnie pola dataclassy Device).
+
+    W przeciwieństwie do parse_ai_devices()/_device_from_record() (które
+    dostają SUROWE dane - opis + tekst kolumn sygnałów - i URUCHAMIAJĄ
+    reguły klasyfikacji) ta funkcja niczego nie przelicza: rekord jest już
+    finalny, więc to czysta rekonstrukcja obiektu. Używane np. do wczytania
+    projektu z historii z powrotem do bieżącej analizy (inne ustawienia
+    rezerwy/rabatów na tych samych, już zweryfikowanych urządzeniach — bez
+    ponownego wgrywania i parsowania pliku źródłowego).
+    """
+    return [Device(**rec) for rec in records]
+
+
 def _device_from_record(rec: dict) -> Device:
     """
     Buduje Device z pojedynczego rekordu dict (np. z JSON od AI).

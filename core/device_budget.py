@@ -96,6 +96,7 @@ def build_device_budget(
     selected_keys: set[str],
     rabaty: dict[str, float] | None = None,
     cennik_file: str = "cennik.csv",
+    price_overrides: dict[str, float] | None = None,
 ) -> DeviceBudgetSelection:
     """
     Buduje kosztorys z urządzeń, których device_key(dev) jest w selected_keys.
@@ -107,22 +108,34 @@ def build_device_budget(
     cennik_file: plik cennikowy - szuka pozycji po oznaczeniu/opisie; jeśli
                  nie ma dopasowania, pozycja idzie z cena_katalogowa=None
                  ("BRAK CENY"), identycznie jak niewycenione karty PLC.
+    price_overrides: opcjonalny dict {device_key(dev, i): cena} - ręcznie
+                 wpisana przez inżyniera cena dla KONKRETNEGO urządzenia
+                 w bieżącej sesji, gdy cennik.csv nie ma jeszcze dopasowania
+                 (cennik urządzeń obiektowych typowo jest pusty - patrz
+                 komentarz niżej). Ma pierwszeństwo przed cennikiem, bo to
+                 świadoma, jawna decyzja inżyniera, a nie zgadywanie.
     """
     if rabaty is None:
         rabaty = {}
+    if price_overrides is None:
+        price_overrides = {}
     rabat = rabaty.get(GRUPA_RABATOWA, 0.0)
     cennik = load_cennik(cennik_file)
 
     sel = DeviceBudgetSelection()
     for i, dev in enumerate(devices):
-        if device_key(dev, i) not in selected_keys:
+        key = device_key(dev, i)
+        if key not in selected_keys:
             continue
 
-        # Cennik urządzeń obiektowych może być kluczowany po oznaczeniu
-        # projektowym (tag) - jeśli inżynier kiedyś go uzupełni. Na razie
-        # w cenniku takich wpisów nie ma, więc to zawsze da None ("BRAK").
-        wpis = cennik.get(dev.oznaczenie) or cennik.get(dev.opis)
-        cena_kat = wpis.get("cena") if wpis else None
+        cena_kat = price_overrides.get(key)
+        if cena_kat is None:
+            # Cennik urządzeń obiektowych może być kluczowany po oznaczeniu
+            # projektowym (tag) - jeśli inżynier kiedyś go uzupełni. Na razie
+            # w cenniku takich wpisów nie ma, więc to zwykle da None ("BRAK"),
+            # dopóki inżynier nie wpisze ceny ręcznie (price_overrides wyżej).
+            wpis = cennik.get(dev.oznaczenie) or cennik.get(dev.opis)
+            cena_kat = wpis.get("cena") if wpis else None
 
         cena_netto = None
         wartosc = None

@@ -16,7 +16,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 # --- RDZEŃ DETERMINISTYCZNY (core/) ---
 # Cały dobór i zliczanie dzieje się tutaj, NIE w LLM.
 from core.ai_contract import build_extraction_prompt, parse_ai_json, build_response_schema
-from core.parser import parse_devices, parse_ai_devices, devices_to_records
+from core.parser import parse_devices, parse_ai_devices, devices_to_records, records_to_devices
 from core.io_counter import count_io, format_balance, IO_TYPES
 from core.plc_selector import select_plc, format_selection, PLATFORMY
 from core.budget import calculate_budget, format_budget, GRUPY_RABATOWE
@@ -41,6 +41,65 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 GEMINI_MODEL = "gemini-3.5-flash"
 MAX_INLINE_PDF_BYTES = 15 * 1024 * 1024
+
+# Pliki "pamięci" aplikacji między sesjami — w .gitignore obok cennik.csv,
+# bo mogą odzwierciedlać rzeczywiste ustawienia/rabaty/nazewnictwo firmy.
+LAST_SETTINGS_FILE = "ustawienia_sesji.json"
+LEARNED_SIGNALS_FILE = "nauczone_decyzje_sygnalow.json"
+
+
+def load_last_settings() -> dict:
+    """
+    Ostatnio użyte ustawienia panelu bocznego (platforma/rezerwa/rabaty/...).
+    Bez tego inżynier wpisywał te same, standardowe rabaty firmy od zera
+    przy KAŻDYM uruchomieniu aplikacji — mimo że w praktyce zmieniają się
+    rzadko. Brak pliku / uszkodzony JSON = po prostu wracamy do wbudowanych
+    wartości domyślnych, nigdy nie wywalamy startu appki z tego powodu.
+    """
+    try:
+        with open(LAST_SETTINGS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_last_settings(settings: dict) -> None:
+    try:
+        with open(LAST_SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass  # ustawienia to wygoda, nie krytyczna funkcja - błąd zapisu nie może wywalić UI
+
+
+def load_learned_signal_decisions() -> dict:
+    """
+    Podpowiedzi dla sekcji "1b. Rozstrzygnij sygnały BRAK DANYCH", uczone
+    z wcześniejszych decyzji inżyniera w TEJ instalacji aplikacji. Klucz to
+    treść sygnału (np. "Pomiar temperatury - czujnik czy przetwornik?
+    Rozstrzygnij ręcznie") — ta sama fraza wraca z core/device_rules.py
+    w każdym projekcie, który trafi na ten sam niejednoznaczny wzorzec.
+
+    WAŻNE - to WYŁĄCZNIE podpowiedź w UI (domyślny wybór w selectboxie),
+    NIGDY automatyczna decyzja: inżynier zawsze musi kliknąć "Zastosuj",
+    żeby sygnał faktycznie zmienił typ. Zero-hallucination zasada z
+    core/*_rules.py ("nie zgadujemy") zostaje nienaruszona — to tylko
+    szybsze podsunięcie tego, co inżynier sam wybrał poprzednio.
+    """
+    try:
+        with open(LEARNED_SIGNALS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_learned_signal_decision(sygnal_nazwa: str, typ: str) -> None:
+    decisions = load_learned_signal_decisions()
+    decisions[sygnal_nazwa] = typ
+    try:
+        with open(LEARNED_SIGNALS_FILE, "w", encoding="utf-8") as f:
+            json.dump(decisions, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
 
 
 def _get_secret(key: str) -> str | None:
@@ -247,7 +306,7 @@ def build_io_dataframe(devices) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def create_word_report(devices, balance, project_label: str, platforma: str, rabaty: dict = None, hmi_entries: list = None, wycena_akpia_keys: set = None) -> io.BytesIO:
+def create_word_report(devices, balance, project_label: str, platforma: str, rabaty: dict = None, hmi_entries: list = None, wycena_akpia_keys: set = None, price_overrides: dict = None) -> io.BytesIO:
     """Raport inżynierski z zatwierdzonym bilansem I/O (na razie: I/O; dobór w kolejnych modułach)."""
     doc = Document()
     title = doc.add_heading(f"Raport AKPiA: {project_label}", level=0)
@@ -318,7 +377,8 @@ def create_word_report(devices, balance, project_label: str, platforma: str, rab
             "Uzupełnij cennik, aby uzyskać pełny kosztorys."
         )
 
-    dev_budget_doc = build_device_budget(devices, wycena_akpia_keys or set(), rabaty=rabaty or {})
+    dev_budget_doc = build_device_budget(devices, wycena_akpia_keys or set(), rabaty=rabaty or {},
+                                          price_overrides=price_overrides or {})
     if dev_budget_doc.items:
         doc.add_heading("Kosztorys urządzeń AKPiA (wybór ręczny)", level=1)
         doc.add_paragraph(
@@ -365,7 +425,7 @@ def create_word_report(devices, balance, project_label: str, platforma: str, rab
     return bio
 
 
-def create_devices_excel(devices, balance, platforma: str, rabaty: dict = None, cable_length: float = 25, asix_factor: float = 1.2, hmi_entries: list = None, wycena_akpia_keys: set = None) -> io.BytesIO:
+def create_devices_excel(devices, balance, platforma: str, rabaty: dict = None, cable_length: float = 25, asix_factor: float = 1.2, hmi_entries: list = None, wycena_akpia_keys: set = None, price_overrides: dict = None) -> io.BytesIO:
     """Excel: 9 zakładek — urządzenia, bilans, PLC, okablowanie, SCADA, porównanie, kosztorys, urządzenia AKPiA."""
     df_dev = build_io_dataframe(devices)
     df_io = pd.DataFrame(
@@ -447,7 +507,8 @@ def create_devices_excel(devices, balance, platforma: str, rabaty: dict = None, 
          "Wartość netto [PLN]": it.wartosc_netto}
         for it in all_budget_items
     ])
-    dev_budget_xl = build_device_budget(devices, wycena_akpia_keys or set(), rabaty=rabaty or {})
+    dev_budget_xl = build_device_budget(devices, wycena_akpia_keys or set(), rabaty=rabaty or {},
+                                         price_overrides=price_overrides or {})
     df_akpia_urz = pd.DataFrame([
         {"Oznaczenie": it.oznaczenie, "Opis": it.opis, "Ilość": it.ilosc,
          "Cena katalogowa [PLN]": it.cena_katalogowa, "Rabat [%]": it.rabat_pct,
@@ -475,17 +536,27 @@ def create_devices_excel(devices, balance, platforma: str, rabaty: dict = None, 
     return bio
 
 
-def save_outputs_to_disk(project_label, devices, balance, word_bio, excel_bio):
+def save_outputs_to_disk(
+    project_label, devices, balance, word_bio, excel_bio,
+    hmi_entries: list = None, wycena_akpia_keys: set = None, akpia_price_overrides: dict = None,
+):
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     safe = project_label.replace("/", "_").replace("\\", "_")
 
-    # Snapshot danych rdzenia (JSON) do historii - audytowalne, odtwarzalne
+    # Snapshot danych rdzenia (JSON) do historii - audytowalne, odtwarzalne.
+    # HMI/wycena AKPiA/ceny ręczne trafiają do snapshotu, żeby "Wczytaj do
+    # bieżącej analizy" (patrz Historia Projektów) mogło przywrócić PEŁNY
+    # stan sesji, nie tylko listę urządzeń - inaczej Word/Excel zapisane
+    # w tym momencie i sam snapshot rozjeżdżałyby się treścią.
     snapshot = {
         "project": project_label,
         "reserve_percent": balance.reserve_percent,
         "balance_base": balance.base,
         "balance_reserved": balance.reserved,
         "devices": devices_to_records(devices),
+        "hmi_entries": hmi_entries or [],
+        "wycena_akpia_keys": sorted(wycena_akpia_keys or set()),
+        "akpia_price_overrides": akpia_price_overrides or {},
     }
     with open(os.path.join(HISTORY_DIR, f"{timestamp}_{safe}.json"), "w", encoding="utf-8") as f:
         json.dump(snapshot, f, ensure_ascii=False, indent=2)
@@ -516,13 +587,20 @@ def persist_fresh_analysis(devices, project_label, settings) -> None:
     word_bio = create_word_report(
         devices, balance, project_label, settings["platforma"], settings["rabaty"],
         st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()),
+        st.session_state.get("akpia_price_overrides", {}),
     )
     excel_bio = create_devices_excel(
         devices, balance, settings["platforma"], settings["rabaty"], settings["cable_length"],
         settings["asix_factor"], st.session_state.get("hmi_entries", []),
         st.session_state.get("wycena_akpia_keys", set()),
+        st.session_state.get("akpia_price_overrides", {}),
     )
-    save_outputs_to_disk(project_label, devices, balance, word_bio, excel_bio)
+    save_outputs_to_disk(
+        project_label, devices, balance, word_bio, excel_bio,
+        hmi_entries=st.session_state.get("hmi_entries", []),
+        wycena_akpia_keys=st.session_state.get("wycena_akpia_keys", set()),
+        akpia_price_overrides=st.session_state.get("akpia_price_overrides", {}),
+    )
 
 
 # --- 5. INTERFEJS (STREAMLIT) ---
@@ -559,31 +637,60 @@ def build_project_label(excel_name, pdf_name, sheet_name=None) -> str:
     return label
 
 
+def _clamp(value, lo, hi, default):
+    try:
+        value = type(default)(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, value))
+
+
 def render_sidebar():
+    # Ostatnio użyte ustawienia (patrz load_last_settings) - żeby inżynier
+    # nie wpisywał tych samych, standardowych rabatów firmy od zera przy
+    # każdym uruchomieniu appki. Wartości clampowane na wypadek ręcznie
+    # popsutego pliku - nigdy nie mają wywalić startu UI.
+    last = load_last_settings()
+
     st.sidebar.title("🛠 Panel Inżyniera AKPiA")
     st.sidebar.markdown("---")
     page = st.sidebar.radio("Tryb działania",
-                            ["Analiza Projektu", "Historia Projektów", "Ustawienia API"])
+                            ["Analiza Projektu", "Historia Projektów", "Ustawienia API"],
+                            key="tryb_dzialania")
     st.sidebar.markdown("---")
     st.sidebar.markdown("**Parametry Techniczne**")
-    platforma = st.sidebar.selectbox("Platforma PLC", list(PLATFORMY.keys()))
-    reserve_percent = st.sidebar.slider("Rezerwa sprzętowa [%]", 0, 100, 30, 5)
-    cable_length = st.sidebar.slider("Średnia trasa kablowa [m]", 5, 200, 25, 5)
-    asix_factor = st.sidebar.slider("Współczynnik zmiennych ASIX", 1.0, 2.0, 1.2, 0.1)
+    platformy_lista = list(PLATFORMY.keys())
+    domyslna_platforma = last.get("platforma")
+    platforma = st.sidebar.selectbox(
+        "Platforma PLC", platformy_lista,
+        index=platformy_lista.index(domyslna_platforma) if domyslna_platforma in platformy_lista else 0,
+    )
+    reserve_percent = st.sidebar.slider(
+        "Rezerwa sprzętowa [%]", 0, 100, _clamp(last.get("reserve_percent"), 0, 100, 30), 5)
+    cable_length = st.sidebar.slider(
+        "Średnia trasa kablowa [m]", 5, 200, _clamp(last.get("cable_length"), 5, 200, 25), 5)
+    asix_factor = st.sidebar.slider(
+        "Współczynnik zmiennych ASIX", 1.0, 2.0, _clamp(last.get("asix_factor"), 1.0, 2.0, 1.2), 0.1)
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("**Rabaty firmowe [%]**")
     rabaty = {}
+    last_rabaty = last.get("rabaty") or {}
     for grupa, default in GRUPY_RABATOWE.items():
         rabaty[grupa] = st.sidebar.number_input(
-            f"{grupa}", min_value=0, max_value=100, value=default, step=1, key=f"rabat_{grupa}"
+            f"{grupa}", min_value=0, max_value=100,
+            value=_clamp(last_rabaty.get(grupa), 0, 100, default), step=1, key=f"rabat_{grupa}"
         )
 
     st.sidebar.markdown("---")
     if st.sidebar.button("Wyloguj", use_container_width=True):
         st.session_state.clear()
         st.rerun()
-    return page, {"reserve_percent": reserve_percent, "platforma": platforma, "rabaty": rabaty, "cable_length": cable_length, "asix_factor": asix_factor}
+
+    settings = {"reserve_percent": reserve_percent, "platforma": platforma, "rabaty": rabaty,
+                "cable_length": cable_length, "asix_factor": asix_factor}
+    save_last_settings(settings)
+    return page, settings
 
 
 def render_extraction_diff_panel() -> None:
@@ -734,7 +841,11 @@ def render_undecided_signal_resolver(devices: list) -> None:
     Decyzja nadpisuje typ TYLKO tego jednego sygnału (mutacja in-place na
     obiekcie Device przechowywanym w st.session_state.devices) — reszta
     danych urządzenia zostaje bez zmian, bilans I/O przelicza się przy
-    najbliższym rerenderze.
+    najbliższym rerenderze. Decyzja jest też zapamiętywana (patrz
+    save_learned_signal_decision) jako PODPOWIEDŹ do następnego razu, gdy
+    ten sam sygnał („Pomiar temperatury - czujnik czy przetwornik?...")
+    pojawi się w innym projekcie — inżynier wciąż musi kliknąć "Zastosuj",
+    podpowiedź tylko wstępnie zaznacza wybór.
     """
     undecided = [
         (i, si, dev, sig)
@@ -745,24 +856,33 @@ def render_undecided_signal_resolver(devices: list) -> None:
     if not undecided:
         return
 
+    learned = load_learned_signal_decisions()
+    typy_opcje = ["— nie rozstrzygnięto —", "DI", "DO", "AI", "AO"]
+
     st.subheader("1b. Rozstrzygnij sygnały bez klasyfikacji (BRAK DANYCH)")
     st.caption(
         f"{len(undecided)} sygnał(ów) nie ma jednoznacznej klasyfikacji DI/DO/AI/AO "
         "(np. „czujnik czy przetwornik?”) i nie wchodzi do bilansu I/O, dopóki nie "
         "zostaną rozstrzygnięte. Rozstrzygnij poniżej, żeby nie edytować pliku "
-        "źródłowego tylko dla tej jednej decyzji."
+        "źródłowego tylko dla tej jednej decyzji. Podpowiedź (jeśli jest) pochodzi "
+        "z Twojej wcześniejszej decyzji dla tego samego sygnału w innym projekcie — "
+        "i tak wymaga kliknięcia „Zastosuj”."
     )
     for i, si, dev, sig in undecided:
         cols = st.columns([3, 2, 1])
-        cols[0].markdown(f"**{dev.oznaczenie or dev.opis}** — {sig.get('nazwa', '')}")
+        nazwa_sygnalu = sig.get("nazwa", "")
+        cols[0].markdown(f"**{dev.oznaczenie or dev.opis}** — {nazwa_sygnalu}")
+        podpowiedz = learned.get(nazwa_sygnalu)
         wybor = cols[1].selectbox(
-            "Typ sygnału", ["— nie rozstrzygnięto —", "DI", "DO", "AI", "AO"],
+            "Typ sygnału", typy_opcje,
+            index=typy_opcje.index(podpowiedz) if podpowiedz in typy_opcje else 0,
             key=f"undecided_{i}_{si}", label_visibility="collapsed",
         )
         if cols[2].button("Zastosuj", key=f"undecided_apply_{i}_{si}", use_container_width=True):
             if wybor != "— nie rozstrzygnięto —":
                 dev.sygnaly[si]["typ"] = wybor
                 dev.sygnaly[si]["source"] = "inzynier"
+                save_learned_signal_decision(nazwa_sygnalu, wybor)
                 st.rerun()
 
 
@@ -772,9 +892,17 @@ def render_device_budget_selector(devices, rabaty: dict) -> None:
     w zakres wyceny AKPiA (typowo: przetworniki pomiarowe). Stan trzymany w
     st.session_state, kluczowany przez device_key() - przetrwa przeliczenia
     w obrębie tej samej sesji, dopóki lista urządzeń się nie zmieni.
+
+    Kolumna "Cena ręczna [PLN]" pozwala wpisać cenę wprost tutaj, gdy
+    cennik.csv nie ma jeszcze dopasowania po oznaczeniu/opisie (typowy stan
+    dla urządzeń obiektowych - patrz core/device_budget.py) - bez tego
+    jedynym sposobem na wycenę takiej pozycji było ręczne dopisanie wiersza
+    do cennik.csv poza aplikacją.
     """
     if "wycena_akpia_keys" not in st.session_state:
         st.session_state.wycena_akpia_keys = set()
+    if "akpia_price_overrides" not in st.session_state:
+        st.session_state.akpia_price_overrides = {}
 
     rows = []
     for i, d in enumerate(devices):
@@ -784,6 +912,7 @@ def render_device_budget_selector(devices, rabaty: dict) -> None:
             "Oznaczenie": d.oznaczenie or "-",
             "Opis": d.opis,
             "Ilość": d.ilosc,
+            "Cena ręczna [PLN]": st.session_state.akpia_price_overrides.get(key),
             "_key": key,  # ukryta kolumna pomocnicza, nie do edycji
         })
     df_sel = pd.DataFrame(rows)
@@ -794,6 +923,11 @@ def render_device_budget_selector(devices, rabaty: dict) -> None:
             "Wycena AKPiA": st.column_config.CheckboxColumn(
                 "Wycena AKPiA", help="Zaznacz, jeśli to urządzenie ma trafić do kosztorysu AKPiA"
             ),
+            "Cena ręczna [PLN]": st.column_config.NumberColumn(
+                "Cena ręczna [PLN]", min_value=0.0, step=1.0,
+                help="Cena katalogowa za sztukę, jeśli cennik.csv nie ma dopasowania. "
+                     "Puste = szukaj w cenniku (BRAK CENY, jeśli i tam nic nie ma).",
+            ),
             "_key": None,  # ukrywa kolumnę techniczną w UI
         },
         disabled=["Oznaczenie", "Opis", "Ilość"],
@@ -802,12 +936,20 @@ def render_device_budget_selector(devices, rabaty: dict) -> None:
         key="device_budget_editor",
     )
 
-    # Synchronizacja stanu na podstawie tego, co inżynier zaznaczył w tabeli
+    # Synchronizacja stanu na podstawie tego, co inżynier zaznaczył/wpisał w tabeli
     st.session_state.wycena_akpia_keys = set(
         edited.loc[edited["Wycena AKPiA"], "_key"]
     )
+    st.session_state.akpia_price_overrides = {
+        row["_key"]: float(row["Cena ręczna [PLN]"])
+        for _, row in edited.iterrows()
+        if pd.notna(row["Cena ręczna [PLN]"])
+    }
 
-    dev_budget = build_device_budget(devices, st.session_state.wycena_akpia_keys, rabaty=rabaty)
+    dev_budget = build_device_budget(
+        devices, st.session_state.wycena_akpia_keys, rabaty=rabaty,
+        price_overrides=st.session_state.akpia_price_overrides,
+    )
     if dev_budget.items:
         st.caption(f"Zaznaczono {len(dev_budget.items)} pozycji do kosztorysu AKPiA.")
     else:
@@ -992,7 +1134,10 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
     st.subheader("9a. Kosztorys urządzeń AKPiA (wybór ręczny)")
     st.caption("Pozycje zaznaczone w sekcji 1a — osobno od sprzętu sterowniczego, "
                "bo dotyczą urządzeń obiektowych (np. przetworników), a nie kart PLC/szafy/SCADA.")
-    dev_budget = build_device_budget(devices, st.session_state.get("wycena_akpia_keys", set()), rabaty=rabaty)
+    dev_budget = build_device_budget(
+        devices, st.session_state.get("wycena_akpia_keys", set()), rabaty=rabaty,
+        price_overrides=st.session_state.get("akpia_price_overrides", {}),
+    )
     if dev_budget.items:
         df_dev_budget = pd.DataFrame([
             {
@@ -1063,7 +1208,12 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
                           "historia_projektow/ i outputs/. Rób to świadomie, np. przed "
                           "wysłaniem oferty — nie każda zmiana suwaka musi zostać w archiwum."):
             try:
-                save_outputs_to_disk(project_label, devices, balance, word_bio, excel_bio)
+                save_outputs_to_disk(
+                    project_label, devices, balance, word_bio, excel_bio,
+                    hmi_entries=st.session_state.get("hmi_entries", []),
+                    wycena_akpia_keys=st.session_state.get("wycena_akpia_keys", set()),
+                    akpia_price_overrides=st.session_state.get("akpia_price_overrides", {}),
+                )
                 st.success("Zapisano do historii projektów.")
             except Exception as exc:
                 st.error(f"Błąd zapisu plików: {exc}")
@@ -1080,6 +1230,17 @@ def main():
                          ("devices_ai_alternative", None)]:
         if key not in st.session_state:
             st.session_state[key] = default
+
+    # Przełączenie zakładki programowo (np. po "Wczytaj do bieżącej analizy"
+    # w Historii) MUSI się zdarzyć PRZED instancjacją st.sidebar.radio(...,
+    # key="tryb_dzialania") w render_sidebar() niżej - Streamlit zabrania
+    # nadpisywania session_state klucza widgetu PO jego instancjacji w tym
+    # samym przebiegu (StreamlitAPIException). Stąd pośredni klucz
+    # "force_page", ustawiany przez wywołującego, zamiast bezpośrednio
+    # tryb_dzialania - odkryte przez faktyczne uruchomienie appki.
+    if st.session_state.get("force_page"):
+        st.session_state.tryb_dzialania = st.session_state.force_page
+        st.session_state.force_page = None
 
     page, settings = render_sidebar()
     api_key = get_api_key()
@@ -1117,7 +1278,16 @@ def main():
 
         current_files = (excel_file.name if excel_file else None,
                          pdf_file.name if pdf_file else None, selected_sheet)
-        if current_files != st.session_state.current_file:
+        if current_files != st.session_state.current_file and st.session_state.get("skip_next_file_change_check"):
+            # Właśnie wczytano projekt z historii (patrz "🔄 Wczytaj do bieżącej
+            # analizy") - to NIE jest nowy plik, tylko powrót na tę stronę bez
+            # niczego w file_uploaderze. Bez tej flagi poniższy blok wyzerowałby
+            # st.session_state.devices natychmiast po reloadzie (pierwsze wejście
+            # na "Analiza Projektu" w danej sesji ZAWSZE różni current_files od
+            # domyślnego (None, None) w current_file - 2-krotka vs 3-krotka).
+            st.session_state.skip_next_file_change_check = False
+            st.session_state.current_file = current_files
+        elif current_files != st.session_state.current_file:
             st.session_state.devices = None
             st.session_state.current_file = current_files
             # Nowy plik -> poprzednie porównanie offline/AI dotyczyło innych
@@ -1250,6 +1420,26 @@ def main():
                 st.json({"project": snap["project"], "reserve_percent": snap["reserve_percent"],
                          "balance_base": snap["balance_base"], "balance_reserved": snap["balance_reserved"]})
                 st.dataframe(pd.DataFrame(snap["devices"]), use_container_width=True)
+
+                st.caption(
+                    "Dotąd historia była archiwum wyłącznie do odczytu — zmiana rabatów "
+                    "czy rezerwy dla starego projektu wymagała ponownego wgrania "
+                    "oryginalnego pliku. Przycisk niżej wczytuje urządzenia (razem z "
+                    "wyceną AKPiA, HMI i ręcznymi cenami z tamtego zapisu, jeśli je miał) "
+                    "z powrotem do bieżącej analizy — resztę (rabaty, rezerwę, platformę) "
+                    "dobierasz od nowa w panelu bocznym."
+                )
+                if st.button("🔄 Wczytaj do bieżącej analizy", type="primary"):
+                    st.session_state.devices = records_to_devices(snap["devices"])
+                    st.session_state.project_label = snap["project"]
+                    st.session_state.hmi_entries = snap.get("hmi_entries", [])
+                    st.session_state.wycena_akpia_keys = set(snap.get("wycena_akpia_keys", []))
+                    st.session_state.akpia_price_overrides = snap.get("akpia_price_overrides", {})
+                    st.session_state.extraction_diff = None
+                    st.session_state.devices_ai_alternative = None
+                    st.session_state.skip_next_file_change_check = True
+                    st.session_state.force_page = "Analiza Projektu"
+                    st.rerun()
 
     elif page == "Ustawienia API":
         st.header("Konfiguracja klucza Gemini")
