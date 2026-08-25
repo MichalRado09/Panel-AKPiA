@@ -149,6 +149,30 @@ formacie OFE_381).
 
 ---
 
+## 6. `ustawienia_sesji.json` i `nauczone_decyzje_sygnalow.json` — pamięć aplikacji (OPCJONALNE)
+
+**Lokalizacja:** katalog główny, obok `app.py`.
+**Czy jest w repo:** NIE (w `.gitignore`) — tworzone i nadpisywane automatycznie
+przez aplikację, mogą odzwierciedlać rzeczywiste rabaty firmy i nazewnictwo
+z realnych projektów, więc traktowane tak samo ostrożnie jak `cennik.csv`.
+
+| Plik | Co przechowuje | Skąd |
+|---|---|---|
+| `ustawienia_sesji.json` | Ostatnio użyte ustawienia panelu bocznego (platforma, rezerwa, rabaty, trasa kablowa, współczynnik ASIX) | Zapisywane automatycznie przy każdym renderze panelu bocznego |
+| `nauczone_decyzje_sygnalow.json` | Podpowiedzi DI/DO/AI/AO dla sekcji „1b. Rozstrzygnij sygnały BRAK DANYCH”, kluczowane treścią sygnału | Zapisywane po kliknięciu „Zastosuj” przy rozstrzyganiu sygnału |
+
+**Co się stanie bez tych plików:** aplikacja startuje z wbudowanymi wartościami
+domyślnymi (rezerwa 30%, rabaty 0%, brak podpowiedzi) — dokładnie jak wcześniej,
+zanim te pliki istniały. Uszkodzony/nieczytelny JSON jest traktowany identycznie
+jak brak pliku (nigdy nie wywala startu appki).
+
+**Ważne:** to WYŁĄCZNIE podpowiedzi w UI — `nauczone_decyzje_sygnalow.json`
+nigdy nie zmienia sygnału automatycznie, inżynier zawsze musi kliknąć
+„Zastosuj”. Zasada „nie zgadujemy” z `core/signal_rules.py`/`core/device_rules.py`
+zostaje nienaruszona.
+
+---
+
 ## Podsumowanie — co jest krytyczne, a co opcjonalne
 
 | Plik | Wymagany do startu appki? | Wymagany do pełnej funkcjonalności? |
@@ -158,4 +182,5 @@ formacie OFE_381).
 | `katalogi/*.csv` | Nie przy starcie, **TAK przy doborze PLC** | Tak |
 | `cennik.csv` | Nie (fallback na szablon) | Tak, do realnych cen |
 | `assets/fonts/*.ttf` | Nie (fallback na Helvetica) | Tak, do czytelnego PDF |
+| `ustawienia_sesji.json` / `nauczone_decyzje_sygnalow.json` | Nie (wygoda, nie funkcjonalność) | Nie |
 | Plik wejściowy (Excel) | Wgrywany ręcznie przez użytkownika | — |
