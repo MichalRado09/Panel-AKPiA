@@ -42,12 +42,33 @@ GEMINI_MODEL = "gemini-3.5-flash"
 MAX_INLINE_PDF_BYTES = 15 * 1024 * 1024
 
 
+def _get_secret(key: str) -> str | None:
+    """
+    Bezpieczny dostęp do st.secrets - zwraca None zamiast wywalać CAŁĄ
+    aplikację, gdy nie istnieje ŻADEN plik secrets.toml.
+
+    To jest realny, sprawdzony w praktyce przypadek: standardowy, udokumentowany
+    sposób uruchomienia tej appki to sam plik .env, BEZ .streamlit/secrets.toml
+    (ten drugi jest opisany jako alternatywa dla Streamlit Cloud). Nowsze wersje
+    Streamlit (potwierdzone na 1.62.0) rzucają StreamlitSecretNotFoundError już
+    na samym `"x" in st.secrets`, jeśli plik secrets.toml nie istnieje NIGDZIE -
+    zamiast po cichu zwrócić False, jak można by się spodziewać po operatorze
+    `in`. Bez tego zabezpieczenia get_api_key() wywala całą aplikację na starcie
+    (błąd nieuchwycony przez check_password(), bo tam APP_PASSWORD z .env
+    ratuje sytuację przez leniwe wyliczanie `and`).
+    """
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return None
+
+
 # --- 2. ZABEZPIECZENIE APLIKACJI (LOGOWANIE) ---
 def check_password():
     """Zwraca True, jeśli użytkownik wprowadził poprawne hasło."""
-    correct_password = os.getenv("APP_PASSWORD")
-    if not correct_password and "APP_PASSWORD" in st.secrets:
-        correct_password = st.secrets["APP_PASSWORD"]
+    correct_password = os.getenv("APP_PASSWORD") or _get_secret("APP_PASSWORD")
 
     if not correct_password:
         st.error("🚨 Krytyczny błąd: Brak skonfigurowanego hasła systemu! Ustaw APP_PASSWORD w .env lub secrets.toml.")
@@ -97,8 +118,9 @@ def get_api_key() -> str:
     override = st.session_state.get("api_key_override", "").strip()
     if override:
         return override
-    if "GEMINI_API_KEY" in st.secrets:
-        return st.secrets["GEMINI_API_KEY"]
+    secret_key = _get_secret("GEMINI_API_KEY")
+    if secret_key:
+        return secret_key
     return os.getenv("GEMINI_API_KEY", "").strip()
 
 
@@ -473,6 +495,35 @@ def save_outputs_to_disk(project_label, devices, balance, word_bio, excel_bio):
         f.write(excel_bio.getvalue())
 
 
+def persist_fresh_analysis(devices, project_label, settings) -> None:
+    """
+    Zapisuje snapshot do historii DOKŁADNIE RAZ, w momencie świeżej ekstrakcji
+    (wywoływane wewnątrz handlera przycisku, więc uruchamia się tylko przy
+    jego kliknięciu, nie przy każdym rerenderze Streamlit).
+
+    Wcześniej zapis do historii wisiał na końcu main() poza handlerem
+    przycisku, więc uruchamiał się przy KAŻDYM rerenderze strony - a
+    Streamlit przelicza cały skrypt od nowa przy każdej interakcji (suwak
+    rezerwy, checkbox wyceny AKPiA, dodanie pozycji HMI...). Efekt: jedna
+    sesja pracy nad tym samym plikiem zaśmiecała historia_projektow/ i
+    outputs/ dziesiątkami prawie identycznych snapshotów, myląc audyt,
+    który ma pokazywać, co faktycznie zostało wysłane klientowi - nie
+    każdy dotyk suwaka. Świadomy, kolejny zapis (np. po dopracowaniu
+    rabatów) jest teraz przyciskiem "💾 Zapisz do historii" w sekcji 11.
+    """
+    balance = count_io(devices, reserve_percent=settings["reserve_percent"])
+    word_bio = create_word_report(
+        devices, balance, project_label, settings["platforma"], settings["rabaty"],
+        st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()),
+    )
+    excel_bio = create_devices_excel(
+        devices, balance, settings["platforma"], settings["rabaty"], settings["cable_length"],
+        settings["asix_factor"], st.session_state.get("hmi_entries", []),
+        st.session_state.get("wycena_akpia_keys", set()),
+    )
+    save_outputs_to_disk(project_label, devices, balance, word_bio, excel_bio)
+
+
 # --- 5. INTERFEJS (STREAMLIT) ---
 def list_excel_sheets(uploaded_file) -> list[str]:
     """Zwraca listę nazw arkuszy w pliku, bez wczytywania danych."""
@@ -828,10 +879,11 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
         st.caption("Brak zaznaczonych urządzeń — sekcja 1a pozwala je dodać.")
 
     st.subheader("10. Weryfikacja kompletności oferty")
-    cab_wires = select_cables(devices, srednia_trasa_m=cable_length)
-    asix_val = select_asix(balance, wspolczynnik=asix_factor)
-    budget_val = calculate_budget(sel.items, rabaty=rabaty or {})
-    val_report = validate_offer(devices, balance, sel, cab_wires, cab_sel, asix_val, budget_val)
+    # Reużywamy sel/cab/cab_sel/asix/budget policzone wyżej (sekcje 3-9) —
+    # bez tego walidator liczył PLC/kable/SCADA/kosztorys jeszcze raz, mimo
+    # że wynik jest identyczny (te same wejścia), tylko po to, żeby za chwilę
+    # go wyrzucić.
+    val_report = validate_offer(devices, balance, sel, cab, cab_sel, asix, budget)
 
     if val_report.is_clean:
         st.success("✓ Brak zastrzeżeń — oferta wygląda na spójną.")
@@ -848,22 +900,16 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
     st.subheader("11. Pobierz dokumenty")
     word_bio = create_word_report(devices, balance, project_label, platforma, rabaty, st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()))
     excel_bio = create_devices_excel(devices, balance, platforma, rabaty, cable_length, asix_factor, st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()))
-
-    # Dane potrzebne dla PDF (te same co dla Word/Excel, budowane raz)
-    sel_for_pdf = select_plc(balance, platforma)
-    cab_for_pdf = select_cabinet(balance, sel_for_pdf)
-    asix_for_pdf = select_asix(balance, wspolczynnik=asix_factor)
-    budget_for_pdf = calculate_budget(sel_for_pdf.items, rabaty=rabaty or {})
-    dev_budget_for_pdf = build_device_budget(
-        devices, st.session_state.get("wycena_akpia_keys", set()), rabaty=rabaty or {}
-    )
+    # sel/cab_sel/asix/budget/dev_budget policzone wyżej (sekcje 3, 7, 5, 9, 9a) -
+    # PDF dostaje te same obiekty zamiast dobierać PLC/szafę/SCADA/kosztorys
+    # jeszcze raz od zera.
     pdf_bio = create_pdf_report(
         devices, balance, project_label, platforma,
-        sel_for_pdf, cab_for_pdf, asix_for_pdf, budget_for_pdf, IO_TYPES,
-        dev_budget=dev_budget_for_pdf,
+        sel, cab_sel, asix, budget, IO_TYPES,
+        dev_budget=dev_budget,
     )
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.download_button("📄 Raport (Word)", data=word_bio,
                            file_name=f"Raport_{project_label}.docx", use_container_width=True)
@@ -874,6 +920,16 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
     with c3:
         st.download_button("📕 Raport (PDF)", data=pdf_bio,
                            file_name=f"Raport_{project_label}.pdf", use_container_width=True)
+    with c4:
+        if st.button("💾 Zapisz do historii", use_container_width=True,
+                     help="Zapisuje bieżący stan (snapshot JSON + Word + Excel) do "
+                          "historia_projektow/ i outputs/. Rób to świadomie, np. przed "
+                          "wysłaniem oferty — nie każda zmiana suwaka musi zostać w archiwum."):
+            try:
+                save_outputs_to_disk(project_label, devices, balance, word_bio, excel_bio)
+                st.success("Zapisano do historii projektów.")
+            except Exception as exc:
+                st.error(f"Błąd zapisu plików: {exc}")
 
 
 def main():
@@ -956,6 +1012,10 @@ def main():
                 st.session_state.extraction_diff = None  # nowa ścieżka - wyczyść poprzednie porównanie
                 for w in warns:
                     st.warning(w)
+                try:
+                    persist_fresh_analysis(devices, st.session_state.project_label, settings)
+                except Exception as exc:
+                    st.error(f"Błąd zapisu plików: {exc}")
 
         # --- Ścieżka z AI: ekstrakcja JSON, potem rdzeń ---
         if not excel_file and not pdf_file:
@@ -977,6 +1037,10 @@ def main():
                     st.session_state.extraction_diff = None  # nowa ścieżka - wyczyść poprzednie porównanie
                     for w in warns:
                         st.warning(w)
+                    try:
+                        persist_fresh_analysis(devices, st.session_state.project_label, settings)
+                    except Exception as save_exc:
+                        st.error(f"Błąd zapisu plików: {save_exc}")
                 except Exception as exc:
                     st.error(f"Błąd ekstrakcji: {exc}")
 
@@ -1012,6 +1076,10 @@ def main():
                         st.session_state.devices_ai_alternative = devices_ai
                         for w in warns_off:
                             st.warning(w)
+                        try:
+                            persist_fresh_analysis(devices_off, st.session_state.project_label, settings)
+                        except Exception as save_exc:
+                            st.error(f"Błąd zapisu plików: {save_exc}")
                     except Exception as exc:
                         st.error(f"Błąd weryfikacji: {exc}")
 
@@ -1019,21 +1087,18 @@ def main():
         if st.session_state.get("extraction_diff") is not None:
             render_extraction_diff_panel()
 
-        # --- Wyniki + zapis (wspólne dla obu ścieżek) ---
+        # --- Wyniki (wspólne dla obu ścieżek) ---
+        # Zapis do historii nie jest tu już automatyczny (patrz
+        # persist_fresh_analysis) - świeża ekstrakcja zapisuje się raz przy
+        # kliknięciu przycisku wyżej, a dalsze, świadome zapisy (np. po
+        # dopracowaniu rabatów) robi przycisk "💾 Zapisz do historii"
+        # w sekcji 11 wewnątrz render_results().
         if st.session_state.devices is not None:
             devices = st.session_state.devices
             balance = count_io(devices, reserve_percent=settings["reserve_percent"])
             render_results(devices, balance, st.session_state.project_label,
                           settings['platforma'], settings['rabaty'],
                           settings['cable_length'], settings['asix_factor'])
-
-            # Zapis na dysk (raz)
-            try:
-                word_bio = create_word_report(devices, balance, st.session_state.project_label, settings['platforma'], settings['rabaty'], st.session_state.get('hmi_entries', []), st.session_state.get('wycena_akpia_keys', set()))
-                excel_bio = create_devices_excel(devices, balance, settings['platforma'], settings['rabaty'], settings['cable_length'], settings['asix_factor'], st.session_state.get('hmi_entries', []), st.session_state.get('wycena_akpia_keys', set()))
-                save_outputs_to_disk(st.session_state.project_label, devices, balance, word_bio, excel_bio)
-            except Exception as exc:
-                st.error(f"Błąd zapisu plików: {exc}")
 
     elif page == "Historia Projektów":
         st.header("Archiwum (snapshoty JSON)")

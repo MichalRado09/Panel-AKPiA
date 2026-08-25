@@ -390,6 +390,28 @@ def test_cabinet_bez_plc_ostrzega():
     assert any("Brak doboru PLC" in w for w in cab.warnings)
 
 
+def test_cabinet_prad_cpu_liczony_dla_kazdej_platformy():
+    """
+    Regresja: numer katalogowy CPU Siemensa ("6ES7512-1DM03-0AB0") nie
+    zawiera ani "CX", ani "CPU", ani "1512" - poprzednia heurystyka
+    dopasowania tekstowego w select_cabinet() pomijała jego pobór prądu
+    (500 mA), więc bilans prądowy Siemensa był systematycznie zaniżony.
+    CPU jest teraz rozpoznawane po PlcItem.katalog_typ == "CPU", niezależnie
+    od formatu numeru katalogowego.
+    """
+    bal = IOBalance()
+    bal.reserved = {"DI": 8, "DO": 0, "AI": 0, "AO": 0}
+    bal.base = dict(bal.reserved)
+    for platforma in ("Beckhoff CX9020", "Siemens ET200SP"):
+        plc = select_plc(bal, platforma)
+        cpu_items = [it for it in plc.items if it.katalog_typ == "CPU"]
+        assert cpu_items, f"Brak pozycji CPU w doborze {platforma}"
+        cab = select_cabinet(bal, plc)
+        assert cab.prad_karty_ma >= 500, (
+            f"Pobór CPU (500mA) nie trafił do bilansu prądowego dla {platforma}"
+        )
+
+
 # --- scada_asix ---------------------------------------------------------------
 
 from core.scada_asix import select_asix, PROGI

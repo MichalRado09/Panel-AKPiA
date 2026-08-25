@@ -134,12 +134,15 @@ def select_cabinet(balance, plc_selection=None) -> CabinetSelection:
     # --- Bilans prądowy 24V DC ---
     # Karty PLC (jeśli podano dobór)
     if plc_selection is not None:
+        # CPU rozpoznawany po katalog_typ (klucz z CSV), NIE po dopasowaniu
+        # tekstowym numeru katalogowego — numery CPU różnią się między
+        # platformami (np. Siemens "6ES7512-1DM03-0AB0" nie zawiera ani "CX",
+        # ani "CPU", ani "1512" — poprzednia heurystyka po prostu go pomijała,
+        # więc pobór CPU Siemensa nigdy nie trafiał do bilansu prądowego).
         for it in plc_selection.items:
-            if it.typ != "io":
-                if "CX" in it.nr or "CPU" in it.nr.upper() or "1512" in it.nr:
-                    sel.prad_karty_ma += POBORY_MA["CPU"] * it.ilosc
-                continue
-            # Karty I/O — rozpoznaj typ po utilization
+            if getattr(it, "katalog_typ", "") == "CPU":
+                sel.prad_karty_ma += POBORY_MA["CPU"] * it.ilosc
+        # Karty I/O — rozpoznaj typ po utilization
         for t, key in (("DI", "karta_DI"), ("DO", "karta_DO"),
                        ("AI", "karta_AI"), ("AO", "karta_AO")):
             u = plc_selection.utilization.get(t, {})
