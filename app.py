@@ -25,6 +25,11 @@ from core.comparison import compare_variants
 from core.scada_asix import select_asix
 from core.cabinet import select_cabinet
 from core.device_budget import build_device_budget, device_key, GRUPA_RABATOWA
+from core.extraction_diff import compare_extractions, ExtractionDiff
+from core.diff_explainer import (
+    build_diff_explanation_prompt, build_diff_explanation_schema,
+    parse_diff_explanation, KATEGORIE_PRZYCZYN,
+)
 from core.pdf_report import create_pdf_report
 from core.validator import validate_offer, Severity
 from core.hmi import build_hmi_selection, TYPOWE_PANELE
@@ -201,6 +206,24 @@ def run_extraction(api_key, excel_df, pdf_bytes, excel_filename, pdf_filename) -
                 client.files.delete(name=uploaded_file.name)
             except Exception:
                 pass
+
+
+def run_diff_explanation(api_key: str, diff, pdf_byl_uzyty: bool) -> dict:
+    """
+    Trzecie, opcjonalne wywołanie AI: wyjaśnia PRZYCZYNĘ już wykrytych
+    (deterministycznie, przez core.extraction_diff) różnic między ścieżką
+    offline i AI. Model NIE widzi surowych plików źródłowych na tym etapie -
+    tylko zwięzłą listę różnic. Patrz core/diff_explainer.py.
+    """
+    client = genai.Client(api_key=api_key)
+    model_id = normalize_model_name(GEMINI_MODEL)
+    prompt = build_diff_explanation_prompt(diff, pdf_byl_uzyty=pdf_byl_uzyty)
+
+    raw = call_gemini_with_retry(
+        client, model_id, [prompt], "",
+        response_schema=build_diff_explanation_schema(),
+    )
+    return parse_diff_explanation(raw)
 
 
 # --- 4. GENEROWANIE PLIKÓW (na podstawie zatwierdzonych danych rdzenia) ---
@@ -533,6 +556,91 @@ def render_sidebar():
     return page, {"reserve_percent": reserve_percent, "platforma": platforma, "rabaty": rabaty, "cable_length": cable_length, "asix_factor": asix_factor}
 
 
+_KATEGORIA_ETYKIETY = {
+    "OBECNE_TYLKO_W_PDF": "📄 Tylko w PDF",
+    "MOZLIWA_DEDUPLIKACJA": "🔗 Możliwa deduplikacja",
+    "NARUSZENIE_KONTRAKTU_AI": "⚠ Naruszenie kontraktu AI",
+    "NIEJEDNOZNACZNE_ZRODLO": "❓ Niejednoznaczne źródło",
+    "NIEUSTALONE": "— Nieustalone",
+}
+
+
+def render_extraction_diff_panel() -> None:
+    """
+    Panel porównania ścieżki OFFLINE i AI - widoczny po użyciu przycisku
+    '⚖ Policz + zweryfikuj przez AI'. Pokazuje deterministyczne różnice
+    (core.extraction_diff) i, jeśli dostępne, wyjaśnienie AI przyczyny
+    (core.diff_explainer) - jako pomoc diagnostyczną, NIGDY jako podstawę
+    do automatycznej zmiany liczb. Wybór, którą wersję zatwierdzić do
+    dalszej pracy, zawsze należy do inżyniera (przyciski niżej).
+    """
+    diff: ExtractionDiff = st.session_state.extraction_diff
+
+    st.subheader("⚖ Porównanie: OFFLINE vs AI")
+
+    if diff.identyczne:
+        st.success(
+            f"✓ Obie ścieżki dają identyczny wynik: {diff.liczba_urzadzen_offline} "
+            "urządzeń, identyczny bilans I/O. Ekstrakcja AI zgodna z parserem offline."
+        )
+        return
+
+    st.warning(
+        f"⚠ Wykryto różnice — offline: {diff.liczba_urzadzen_offline} urządzeń, "
+        f"AI: {diff.liczba_urzadzen_ai} urządzeń."
+    )
+
+    delta_cols = st.columns(4)
+    for i, t in enumerate(IO_TYPES):
+        d = diff.balans_delta[t]
+        delta_cols[i].metric(t, f"{d:+d}" if d != 0 else "0",
+                             help="Delta AI minus offline")
+
+    # Mapowanie oznaczenie+opis -> kategoria/uzasadnienie z wyjaśnienia AI (jeśli jest)
+    wyjasnienia_map = {}
+    explanation = st.session_state.get("extraction_diff_explanation")
+    if explanation:
+        for w in explanation.get("wyjasnienia", []):
+            wyjasnienia_map[(w.get("oznaczenie", ""), w.get("opis", ""))] = w
+
+    if explanation and explanation.get("podsumowanie"):
+        st.info(f"💡 AI: {explanation['podsumowanie']}")
+    elif st.session_state.get("extraction_diff_explanation_error"):
+        st.caption(
+            "ℹ Wyjaśnienie AI przyczyny różnic niedostępne "
+            f"({st.session_state.extraction_diff_explanation_error}) — "
+            "poniżej same wykryte różnice, bez automatycznego komentarza."
+        )
+
+    def _render_lista(tytul: str, wpisy: list) -> None:
+        if not wpisy:
+            return
+        st.markdown(f"**{tytul} ({len(wpisy)}):**")
+        for e in wpisy:
+            wyj = wyjasnienia_map.get((e.oznaczenie, e.opis))
+            if wyj:
+                etykieta = _KATEGORIA_ETYKIETY.get(wyj["kategoria"], wyj["kategoria"])
+                st.markdown(
+                    f"- **{e.oznaczenie}**: {e.opis} (x{e.ilosc}) — {etykieta}  \n"
+                    f"  <span style='color:gray;font-size:0.9em'>{wyj.get('uzasadnienie', '')}</span>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(f"- **{e.oznaczenie}**: {e.opis} (x{e.ilosc})")
+
+    _render_lista("Tylko w OFFLINE", diff.tylko_w_offline)
+    _render_lista("Tylko w AI", diff.tylko_w_ai)
+
+    st.caption(
+        "Decyzję, którą wersję zatwierdzić do dalszej pracy, podejmuje inżynier. "
+        "Domyślnie do sekcji poniżej trafia wynik OFFLINE (deterministyczny)."
+    )
+    if st.session_state.get("devices_ai_alternative") is not None:
+        if st.button("🔄 Użyj zamiast tego wyniku AI", use_container_width=False):
+            st.session_state.devices = st.session_state.devices_ai_alternative
+            st.rerun()
+
+
 def render_device_budget_selector(devices, rabaty: dict) -> None:
     """
     Checkbox-lista urządzeń obiektowych do RĘCZNEGO oznaczenia, które wchodzą
@@ -830,7 +938,10 @@ def main():
         st.stop()
 
     for key, default in [("api_key_override", ""), ("devices", None),
-                         ("project_label", None), ("current_file", (None, None))]:
+                         ("project_label", None), ("current_file", (None, None)),
+                         ("extraction_diff", None), ("extraction_diff_explanation", None),
+                         ("extraction_diff_explanation_error", None),
+                         ("devices_ai_alternative", None)]:
         if key not in st.session_state:
             st.session_state[key] = default
 
@@ -873,6 +984,12 @@ def main():
         if current_files != st.session_state.current_file:
             st.session_state.devices = None
             st.session_state.current_file = current_files
+            # Nowy plik -> poprzednie porównanie offline/AI dotyczyło innych
+            # danych, więc traci sens i musi zniknąć razem z devices.
+            st.session_state.extraction_diff = None
+            st.session_state.extraction_diff_explanation = None
+            st.session_state.extraction_diff_explanation_error = None
+            st.session_state.devices_ai_alternative = None
 
         excel_df = None
         if excel_file:
@@ -895,6 +1012,7 @@ def main():
                 devices, warns = parse_devices(excel_df)
                 st.session_state.devices = devices
                 st.session_state.project_label = build_project_label(current_files[0], current_files[1], selected_sheet)
+                st.session_state.extraction_diff = None  # nowa ścieżka - wyczyść poprzednie porównanie
                 for w in warns:
                     st.warning(w)
 
@@ -915,10 +1033,66 @@ def main():
                     devices, warns = parse_ai_devices(records)
                     st.session_state.devices = devices
                     st.session_state.project_label = build_project_label(current_files[0], current_files[1], selected_sheet)
+                    st.session_state.extraction_diff = None  # nowa ścieżka - wyczyść poprzednie porównanie
                     for w in warns:
                         st.warning(w)
                 except Exception as exc:
                     st.error(f"Błąd ekstrakcji: {exc}")
+
+        # --- Ścieżka weryfikacyjna: obie metody naraz + porównanie (opcjonalna, kosztowa) ---
+        if excel_df is not None:
+            if not api_key:
+                st.caption("⚖ Weryfikacja przez AI wymaga klucza API Gemini (patrz wyżej).")
+            elif st.button("⚖ Policz + zweryfikuj przez AI", use_container_width=True,
+                           help="Uruchamia OBIE metody (offline i AI) na tych samych danych "
+                                "i pokazuje różnice. Zużywa dodatkowe zapytania do API - "
+                                "użyj, gdy chcesz sprawdzić jakość ekstrakcji, nie przy każdej "
+                                "iteracji."):
+                with st.spinner("Liczenie offline + ekstrakcja AI + porównanie..."):
+                    try:
+                        devices_off, warns_off = parse_devices(excel_df)
+                        records = run_extraction(
+                            api_key=api_key, excel_df=excel_df,
+                            pdf_bytes=pdf_file.getvalue() if pdf_file else None,
+                            excel_filename=current_files[0], pdf_filename=current_files[1],
+                        )
+                        devices_ai, warns_ai = parse_ai_devices(records)
+
+                        diff = compare_extractions(devices_off, devices_ai)
+                        st.session_state.extraction_diff = diff
+                        st.session_state.extraction_diff_explanation = None
+
+                        # Trzecie wywołanie AI TYLKO gdy jest realna różnica - oszczędność
+                        # kosztu/czasu, zgodnie z decyzją: nie pytamy o wyjaśnienie zera.
+                        if diff.ma_roznice:
+                            with st.spinner("Różnice wykryte - AI wyjaśnia przyczynę..."):
+                                try:
+                                    wyjasnienie = run_diff_explanation(
+                                        api_key=api_key, diff=diff,
+                                        pdf_byl_uzyty=pdf_file is not None,
+                                    )
+                                    st.session_state.extraction_diff_explanation = wyjasnienie
+                                except Exception as exc:
+                                    # Wyjaśnienie to dodatek, nie zależność krytyczna - błąd
+                                    # tutaj NIE MOŻE ukryć przed inżynierem samych różnic.
+                                    st.session_state.extraction_diff_explanation_error = str(exc)
+
+                        # Domyślnie do dalszej pracy bierzemy wynik OFFLINE (deterministyczny,
+                        # bezpieczniejszy domyślny wybór) - inżynier może ręcznie przełączyć
+                        # na wynik AI w sekcji porównania niżej.
+                        st.session_state.devices = devices_off
+                        st.session_state.project_label = build_project_label(
+                            current_files[0], current_files[1], selected_sheet
+                        )
+                        st.session_state.devices_ai_alternative = devices_ai
+                        for w in warns_off:
+                            st.warning(w)
+                    except Exception as exc:
+                        st.error(f"Błąd weryfikacji: {exc}")
+
+        # --- Panel porównania (widoczny tylko po użyciu przycisku weryfikacji) ---
+        if st.session_state.get("extraction_diff") is not None:
+            render_extraction_diff_panel()
 
         # --- Wyniki + zapis (wspólne dla obu ścieżek) ---
         if st.session_state.devices is not None:
