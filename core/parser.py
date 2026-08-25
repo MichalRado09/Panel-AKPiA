@@ -330,11 +330,26 @@ def _deduplicate_hierarchical_aggregates(
         if not kws:
             other.append(dev)
             continue
-        # Wiersz szczegółowy = brak jawnie podanej Ilości.
-        # Wypełnione 'oznaczenie' NIE dyskwalifikuje (rozpisane sztuki mają tag).
-        # Pomijamy sprawdzanie L.p., bo projektanci odruchowo przeciągają numerację
-        # w Excelu w dół dla każdego wiersza, co blokowało deduplikację.
-        wiersz_szczegolowy = not dev.ilosc_podana
+        # Wiersz szczegółowy = brak L.p. ORAZ brak jawnie podanej Ilości.
+        #
+        # WAŻNE — dlaczego SPRAWDZAMY L.p., mimo że część arkuszy ma go
+        # wypełniony "odruchowo" (Excel przeciąga numerację w dół):
+        # samo sprawdzanie Ilości NIE WYSTARCZA. Jeśli projektant wypełnił
+        # L.p. dla wszystkich wierszy, ale przy dwóch NIEZALEŻNYCH, osobnych
+        # urządzeniach zapomniał wpisać Ilość (typowe niedopatrzenie) -
+        # sama reguła "brak Ilości" pochłonie je do zupełnie NIEPOWIĄZANEJ
+        # pozycji zbiorczej tylko dlatego, że opis brzmi podobnie. Zmierzone:
+        # 2 niezależne czujniki x1 zniknęły w pozycji "12 czujników" mimo
+        # własnej numeracji L.p.=2, L.p.=3 - błąd zaniżający bilans o 2.
+        #
+        # L.p. jest więc SILNIEJSZYM sygnałem samodzielności niż jego brak
+        # jest sygnałem przynależności do agregatu. Jeśli w Twoich plikach
+        # L.p. bywa wypełniany automatycznie nawet dla wierszy szczegółowych
+        # rozpisujących agregat - to błąd DANYCH WEJŚCIOWYCH do skorygowania
+        # w źródle (usuń L.p. z wierszy, które faktycznie są rozpisaniem),
+        # a nie powód do osłabiania tej reguły, bo to bezpośrednio otwiera
+        # ryzyko cichego pochłaniania niepowiązanych urządzeń (patrz wyżej).
+        wiersz_szczegolowy = not dev.lp and not dev.ilosc_podana
         if wiersz_szczegolowy and dev.ilosc == 1 and not dev.ilosc_flaga:
             unnamed.append(dev)
         elif dev.lp and dev.ilosc > 1:

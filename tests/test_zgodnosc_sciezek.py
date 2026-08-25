@@ -171,6 +171,36 @@ def test_inny_kod_obszaru_nie_jest_deduplikowany():
     assert "Siłownik z napędem 01PCB40 AA401" in opisy
 
 
+def test_wiersz_z_lp_ale_bez_ilosci_nie_jest_deduplikowany():
+    """
+    REGRESJA: L.p. wypełniony, ale Ilość pusta (niedopatrzenie przy
+    wypełnianiu arkusza) - to NIE jest wiersz szczegółowy pozycji zbiorczej,
+    tylko osobne, samodzielnie ponumerowane urządzenie. Sprawdzanie WYŁĄCZNIE
+    Ilości (bez L.p.) błędnie pochłaniało takie wiersze do niepowiązanego
+    agregatu o podobnym opisie - zmierzone: 2 niezależne urządzenia zniknęły
+    w pozycji "12 czujników" mimo własnej numeracji L.p.=2, L.p.=3.
+    """
+    df = pd.DataFrame([
+        (1, "AKPiA", "TI (różne)", "Czujniki temperatury w układzie", 12,
+         "4-20mA", "-", "", ""),
+        (2, "RTO", "TI-201", "Przetwornik temperatury (osobny obwód)", None,
+         "4-20mA", "-", "", ""),
+        (3, "RTO", "TI-202", "Przetwornik temperatury (osobny obwód)", None,
+         "4-20mA", "-", "", ""),
+    ], columns=KOLUMNY)
+
+    dev, _ = parse_devices(df)
+    assert len(dev) == 3, (
+        f"Oczekiwano 3 niezależne urządzenia (własny L.p.), dostano {len(dev)} "
+        "- wiersze z L.p. zostały błędnie zdeduplikowane mimo braku podstaw."
+    )
+    bal = count_io(dev, reserve_percent=0)
+    assert bal.base["AI"] == 14, (
+        f"Oczekiwano AI=14 (12+1+1), dostano AI={bal.base['AI']} "
+        "- niezależne urządzenia zostały wchłonięte przez agregat."
+    )
+
+
 def test_pozycja_zbiorcza_zachowuje_ilosc():
     """Deduplikacja usuwa egzemplarze, ale NIE zmienia Ilości pozycji zbiorczej."""
     dev, _ = parse_devices(_fixture_df())
