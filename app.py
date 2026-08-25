@@ -29,6 +29,7 @@ from core.extraction_diff import compare_extractions, ExtractionDiff
 from core.pdf_report import create_pdf_report
 from core.validator import validate_offer, Severity
 from core.hmi import build_hmi_selection, TYPOWE_PANELE
+from core.signal_rules import NO_DATA
 
 # --- 1. KONFIGURACJA BAZOWA ---
 load_dotenv()
@@ -636,6 +637,135 @@ def render_extraction_diff_panel() -> None:
             st.rerun()
 
 
+def render_device_table_editor(devices: list) -> list:
+    """
+    Edytowalna tabela urządzeń: inżynier może poprawić błędnie odczytaną
+    ILOŚĆ oraz USUNĄĆ pozycję (np. duplikat, błędnie wyekstrahowany wiersz)
+    wprost w interfejsie — bez wracania do źródłowego pliku i ponownego
+    przechodzenia całym przepływem (upload -> parsowanie -> ekstrakcja...).
+    To był dotąd realny brak: tabela w sekcji 1 była WYŁĄCZNIE do odczytu
+    (st.dataframe), więc każda drobna pomyłka parsera/AI wymagała edycji
+    Excela i powtórzenia analizy od zera.
+
+    Świadomie NIE pozwala edytować Opisu/Oznaczenia/Układu w tej tabeli —
+    zmiana opisu nie przeliczyłaby ponownie reguły typu urządzenia (sygnały
+    są przypisywane raz, przy parsowaniu w core/parser.py), więc cicha
+    edycja opisu bez przeliczenia sygnałów tworzyłaby niespójność, którą
+    trudno zauważyć. Klasyfikację sygnałów BRAK DANYCH rozstrzyga osobna
+    sekcja niżej (render_undecided_signal_resolver).
+
+    Zwraca zaktualizowaną listę Device — wywołujący ma podmienić nią
+    st.session_state.devices, żeby usunięcie wiersza przetrwało rerender.
+    """
+    rows = []
+    for i, d in enumerate(devices):
+        sygnaly = "; ".join(f"{s['nazwa']} [{s['typ']}]" for s in d.sygnaly) or "-"
+        zrodla = {s.get("source", "kolumna") for s in d.sygnaly}
+        rows.append({
+            "L.p.": d.lp,
+            "Układ": d.uklad,
+            "Oznaczenie": d.oznaczenie,
+            "Opis": d.opis,
+            "Ilość": d.ilosc,
+            "Sygnały": sygnaly,
+            "Źródło": ", ".join(sorted(zrodla)) if zrodla else "-",
+            "Uwagi parsera": " | ".join(d.warnings) if d.warnings else "",
+            "_key": device_key(d, i),
+        })
+    df = pd.DataFrame(rows)
+
+    edited = st.data_editor(
+        df,
+        column_config={
+            "Ilość": st.column_config.NumberColumn(
+                "Ilość", min_value=0, step=1,
+                help="Popraw, jeśli parser/AI źle odczytał liczbę sztuk.",
+            ),
+            "_key": None,  # ukrywa kolumnę techniczną w UI
+        },
+        disabled=["L.p.", "Układ", "Oznaczenie", "Opis", "Sygnały", "Źródło", "Uwagi parsera"],
+        num_rows="dynamic",
+        hide_index=True,
+        use_container_width=True,
+        key="device_table_editor",
+    )
+
+    by_key = {device_key(d, i): d for i, d in enumerate(devices)}
+    updated: list = []
+    n_new_ignored = 0
+    for _, row in edited.iterrows():
+        dev = by_key.get(row["_key"])
+        if dev is None:
+            # Ręcznie dodany, pusty wiersz w edytorze — nie da się dla niego
+            # zbudować sygnałów I/O bez opisu, więc pomijamy go zamiast
+            # cicho liczyć "urządzenie" bez żadnych danych.
+            n_new_ignored += 1
+            continue
+        try:
+            dev.ilosc = max(0, int(row["Ilość"]))
+        except (TypeError, ValueError):
+            pass
+        updated.append(dev)
+
+    if n_new_ignored:
+        st.warning(
+            f"Zignorowano {n_new_ignored} ręcznie dodany wiersz — dodawanie nowych "
+            "urządzeń w tej tabeli nie jest wspierane (brak opisu = brak reguły "
+            "sygnałów). Dodaj urządzenie w źródłowym pliku i wczytaj ponownie."
+        )
+    if len(updated) != len(devices):
+        st.caption(
+            f"ℹ Usunięto {len(devices) - len(updated)} pozycję/e z listy — "
+            "zmiana obowiązuje do końca tej analizy (nie zmienia pliku źródłowego)."
+        )
+
+    return updated
+
+
+def render_undecided_signal_resolver(devices: list) -> None:
+    """
+    Ręczne rozstrzygnięcie sygnałów BRAK DANYCH (nierozpoznany typ DI/DO/AI/AO)
+    WPROST w interfejsie — bez edycji źródłowego pliku. Dotąd jedynym sposobem
+    na naprawienie takiego sygnału było wyjście z aplikacji, poprawienie opisu
+    w Excelu i ponowne przejście całej analizy — mimo że dane wymagające
+    decyzji są dokładnie znane (patrz core/signal_rules.py, core/device_rules.py:
+    "NIE zgadujemy").
+
+    Decyzja nadpisuje typ TYLKO tego jednego sygnału (mutacja in-place na
+    obiekcie Device przechowywanym w st.session_state.devices) — reszta
+    danych urządzenia zostaje bez zmian, bilans I/O przelicza się przy
+    najbliższym rerenderze.
+    """
+    undecided = [
+        (i, si, dev, sig)
+        for i, dev in enumerate(devices)
+        for si, sig in enumerate(dev.sygnaly)
+        if sig.get("typ") == NO_DATA
+    ]
+    if not undecided:
+        return
+
+    st.subheader("1b. Rozstrzygnij sygnały bez klasyfikacji (BRAK DANYCH)")
+    st.caption(
+        f"{len(undecided)} sygnał(ów) nie ma jednoznacznej klasyfikacji DI/DO/AI/AO "
+        "(np. „czujnik czy przetwornik?”) i nie wchodzi do bilansu I/O, dopóki nie "
+        "zostaną rozstrzygnięte. Rozstrzygnij poniżej, żeby nie edytować pliku "
+        "źródłowego tylko dla tej jednej decyzji."
+    )
+    for i, si, dev, sig in undecided:
+        cols = st.columns([3, 2, 1])
+        cols[0].markdown(f"**{dev.oznaczenie or dev.opis}** — {sig.get('nazwa', '')}")
+        wybor = cols[1].selectbox(
+            "Typ sygnału", ["— nie rozstrzygnięto —", "DI", "DO", "AI", "AO"],
+            key=f"undecided_{i}_{si}", label_visibility="collapsed",
+        )
+        if cols[2].button("Zastosuj", key=f"undecided_apply_{i}_{si}", use_container_width=True):
+            if wybor != "— nie rozstrzygnięto —":
+                dev.sygnaly[si]["typ"] = wybor
+                dev.sygnaly[si]["source"] = "inzynier"
+                st.rerun()
+
+
 def render_device_budget_selector(devices, rabaty: dict) -> None:
     """
     Checkbox-lista urządzeń obiektowych do RĘCZNEGO oznaczenia, które wchodzą
@@ -688,8 +818,15 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
     """Sekcja HITL: urządzenia + bilans + PLC + okablowanie + SCADA + porównanie + kosztorys + pliki."""
     st.subheader("1. Zidentyfikowane urządzenia (do weryfikacji)")
     st.caption("Kolumna 'Źródło' pokazuje, czy sygnał pochodzi z danych (kolumna), "
-               "czy z reguły typu urządzenia. Zweryfikuj pozycje z uwagami.")
-    st.dataframe(build_io_dataframe(devices), use_container_width=True)
+               "czy z reguły typu urządzenia. Popraw Ilość albo usuń błędną pozycję "
+               "wprost w tabeli — zmiana obowiązuje od razu, bez ponownego wgrywania pliku.")
+    updated_devices = render_device_table_editor(devices)
+    if len(updated_devices) != len(devices):
+        st.session_state.devices = updated_devices
+        st.rerun()
+    devices = updated_devices
+
+    render_undecided_signal_resolver(devices)
 
     st.subheader("1a. Urządzenia obiektowe wchodzące w zakres wyceny AKPiA")
     st.caption(
