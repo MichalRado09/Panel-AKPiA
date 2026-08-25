@@ -184,6 +184,17 @@ def get_api_key() -> str:
     return os.getenv("GEMINI_API_KEY", "").strip()
 
 
+def get_model_id() -> str:
+    """
+    Model Gemini do ekstrakcji - domyślnie stała GEMINI_MODEL, nadpisywalna
+    na czas sesji w "Ustawienia API" (np. do przetestowania mocniejszego
+    modelu bez edycji kodu i redeployu - dotąd jedyną drogą była zmiana
+    stałej w kodzie, patrz README).
+    """
+    override = st.session_state.get("model_id_override", "").strip()
+    return override or GEMINI_MODEL
+
+
 def wait_for_file_active(client: genai.Client, file_name: str, timeout: int = 120) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -242,7 +253,7 @@ def run_extraction(api_key, excel_df, pdf_bytes, excel_filename, pdf_filename) -
     Żadnego doboru ani BOM - to policzy rdzeń w core/.
     """
     client = genai.Client(api_key=api_key)
-    model_id = normalize_model_name(GEMINI_MODEL)
+    model_id = normalize_model_name(get_model_id())
     sys_inst = build_extraction_prompt()
 
     user_prompt = "ZAŁĄCZONE ŹRÓDŁA DANYCH:\n"
@@ -995,7 +1006,18 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
 
     st.subheader(f"3. Dobór sterownika ({platforma})")
     st.caption("Reguły zweryfikowane na realnych projektach (Wujek, TOM, Malbork).")
-    sel = select_plc(balance, platforma)
+    try:
+        sel = select_plc(balance, platforma)
+    except FileNotFoundError:
+        # Jedyny plik danych bez łagodnego fallbacku (patrz WYMAGANE_PLIKI.md) -
+        # bez tego inżynier dostawałby surowy traceback Streamlit zamiast
+        # zrozumiałej informacji, co dokładnie brakuje i jak to naprawić.
+        st.error(
+            f"🚨 Brak pliku katalogu kart dla platformy „{platforma}” w katalogu "
+            f"`katalogi/`. Sprawdź core/plc_selector.py::PLATFORMY i czy "
+            f"odpowiadający plik CSV faktycznie tam jest — patrz WYMAGANE_PLIKI.md."
+        )
+        st.stop()
     df_plc = pd.DataFrame([
         {"Ilość": it.ilosc, "Nr katalogowy": it.nr, "Opis": it.opis} for it in sel.items
     ])
@@ -1224,7 +1246,7 @@ def main():
     if not check_password():
         st.stop()
 
-    for key, default in [("api_key_override", ""), ("devices", None),
+    for key, default in [("api_key_override", ""), ("model_id_override", ""), ("devices", None),
                          ("project_label", None), ("current_file", (None, None)),
                          ("extraction_diff", None),
                          ("devices_ai_alternative", None)]:
@@ -1278,16 +1300,19 @@ def main():
 
         current_files = (excel_file.name if excel_file else None,
                          pdf_file.name if pdf_file else None, selected_sheet)
-        if current_files != st.session_state.current_file and st.session_state.get("skip_next_file_change_check"):
-            # Właśnie wczytano projekt z historii (patrz "🔄 Wczytaj do bieżącej
-            # analizy") - to NIE jest nowy plik, tylko powrót na tę stronę bez
-            # niczego w file_uploaderze. Bez tej flagi poniższy blok wyzerowałby
-            # st.session_state.devices natychmiast po reloadzie (pierwsze wejście
-            # na "Analiza Projektu" w danej sesji ZAWSZE różni current_files od
-            # domyślnego (None, None) w current_file - 2-krotka vs 3-krotka).
-            st.session_state.skip_next_file_change_check = False
-            st.session_state.current_file = current_files
-        elif current_files != st.session_state.current_file:
+        # has_any_file: st.file_uploader NIE gwarantuje, że plik zostaje
+        # "przypięty" po przełączeniu na inną stronę (Historia Projektów,
+        # Ustawienia API) i powrocie - w praktyce wraca pusty. Bez tego
+        # warunku sam powrót na tę stronę wyglądałby jak "usunięcie pliku"
+        # i wyzerowałby już policzoną analizę, mimo że inżynier niczego
+        # nie zmienił - zmierzone bezpośrednio: nawigacja Analiza -> Ustawienia
+        # -> Analiza kasowała wyniki. Realny plik w uploaderze nadal
+        # poprawnie wyzwala przeliczenie przy wgraniu innego pliku.
+        # Ubocznie rozwiązuje też reload z historii (patrz "🔄 Wczytaj do
+        # bieżącej analizy") - zaraz po nim w uploaderze też nic nie ma,
+        # więc has_any_file=False i devices poprawnie zostają nietknięte.
+        has_any_file = excel_file is not None or pdf_file is not None
+        if has_any_file and current_files != st.session_state.current_file:
             st.session_state.devices = None
             st.session_state.current_file = current_files
             # Nowy plik -> poprzednie porównanie offline/AI dotyczyło innych
@@ -1437,7 +1462,6 @@ def main():
                     st.session_state.akpia_price_overrides = snap.get("akpia_price_overrides", {})
                     st.session_state.extraction_diff = None
                     st.session_state.devices_ai_alternative = None
-                    st.session_state.skip_next_file_change_check = True
                     st.session_state.force_page = "Analiza Projektu"
                     st.rerun()
 
@@ -1446,6 +1470,17 @@ def main():
         st.info("Klucz z `.streamlit/secrets.toml` ładuje się automatycznie. Tutaj nadpiszesz go na czas sesji.")
         st.session_state.api_key_override = st.text_input(
             "Tymczasowy klucz API", value=st.session_state.api_key_override, type="password")
+
+        st.markdown("---")
+        st.subheader("Model Gemini")
+        st.caption(f"Domyślny model (w kodzie): `{GEMINI_MODEL}`. Zmiana obowiązuje "
+                   "do końca tej sesji przeglądarki — bez edycji kodu i redeployu.")
+        st.session_state.model_id_override = st.text_input(
+            "Nadpisz model (opcjonalnie)", value=st.session_state.model_id_override,
+            placeholder=GEMINI_MODEL,
+            help="Zostaw puste, żeby użyć domyślnego modelu z kodu.",
+        )
+        st.caption(f"Aktualnie używany: `{get_model_id()}`")
 
 
 if __name__ == "__main__":
