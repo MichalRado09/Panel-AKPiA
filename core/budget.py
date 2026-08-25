@@ -32,6 +32,8 @@ GRUPY_RABATOWE = {
     "ASIX": 0,
     "APARATURA": 0,
     "KABLE": 0,
+    "AKPIA_URZADZENIA": 0,  # przetworniki i inne urządzenia obiektowe
+                            # wycenione ręcznie przez inżyniera - patrz device_budget.py
 }
 
 

@@ -24,6 +24,7 @@ from core.cables import select_cables
 from core.comparison import compare_variants
 from core.scada_asix import select_asix
 from core.cabinet import select_cabinet
+from core.device_budget import build_device_budget, device_key, GRUPA_RABATOWA
 from core.pdf_report import create_pdf_report
 from core.validator import validate_offer, Severity
 from core.hmi import build_hmi_selection, TYPOWE_PANELE
@@ -222,7 +223,7 @@ def build_io_dataframe(devices) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def create_word_report(devices, balance, project_label: str, platforma: str, rabaty: dict = None, hmi_entries: list = None) -> io.BytesIO:
+def create_word_report(devices, balance, project_label: str, platforma: str, rabaty: dict = None, hmi_entries: list = None, wycena_akpia_keys: set = None) -> io.BytesIO:
     """Raport inżynierski z zatwierdzonym bilansem I/O (na razie: I/O; dobór w kolejnych modułach)."""
     doc = Document()
     title = doc.add_heading(f"Raport AKPiA: {project_label}", level=0)
@@ -293,6 +294,35 @@ def create_word_report(devices, balance, project_label: str, platforma: str, rab
             "Uzupełnij cennik, aby uzyskać pełny kosztorys."
         )
 
+    dev_budget_doc = build_device_budget(devices, wycena_akpia_keys or set(), rabaty=rabaty or {})
+    if dev_budget_doc.items:
+        doc.add_heading("Kosztorys urządzeń AKPiA (wybór ręczny)", level=1)
+        doc.add_paragraph(
+            "Urządzenia obiektowe zaznaczone przez inżyniera jako wchodzące "
+            "w zakres dostawy/wyceny AKPiA — osobno od sprzętu sterowniczego."
+        )
+        dt = doc.add_table(rows=1, cols=5)
+        dt.style = "Light Grid Accent 1"
+        dh = dt.rows[0].cells
+        for i, h in enumerate(["Oznaczenie", "Opis", "Ilość", "Kat. PLN", "Netto PLN"]):
+            dh[i].text = h
+        for it in dev_budget_doc.items:
+            dc = dt.add_row().cells
+            dc[0].text = it.oznaczenie
+            dc[1].text = it.opis
+            dc[2].text = str(it.ilosc)
+            dc[3].text = f"{it.cena_katalogowa:.2f}" if it.cena_katalogowa else "BRAK"
+            dc[4].text = f"{it.wartosc_netto:.2f}" if it.wartosc_netto else "-"
+        dsumr = dt.add_row().cells
+        dsumr[0].text = "SUMA"
+        dsumr[3].text = f"{dev_budget_doc.suma_katalogowa:.2f}"
+        dsumr[4].text = f"{dev_budget_doc.suma_netto:.2f}"
+        if dev_budget_doc.brak_ceny:
+            doc.add_paragraph(
+                f"Uwaga: {len(dev_budget_doc.brak_ceny)} pozycji bez ceny "
+                "katalogowej (cennik nie zawiera jeszcze urządzeń obiektowych)."
+            )
+
     doc.add_heading("Uwagi techniczne", level=1)
     if balance.undecided:
         doc.add_paragraph("Sygnały wymagające decyzji inżyniera (BRAK DANYCH):")
@@ -311,8 +341,8 @@ def create_word_report(devices, balance, project_label: str, platforma: str, rab
     return bio
 
 
-def create_devices_excel(devices, balance, platforma: str, rabaty: dict = None, cable_length: float = 25, asix_factor: float = 1.2, hmi_entries: list = None) -> io.BytesIO:
-    """Excel: 8 zakładek — urządzenia, bilans, PLC, okablowanie, SCADA, porównanie, kosztorys."""
+def create_devices_excel(devices, balance, platforma: str, rabaty: dict = None, cable_length: float = 25, asix_factor: float = 1.2, hmi_entries: list = None, wycena_akpia_keys: set = None) -> io.BytesIO:
+    """Excel: 9 zakładek — urządzenia, bilans, PLC, okablowanie, SCADA, porównanie, kosztorys, urządzenia AKPiA."""
     df_dev = build_io_dataframe(devices)
     df_io = pd.DataFrame(
         [{"Typ": t, "Baza": balance.base[t], f"Rezerwa {balance.reserve_percent}%": balance.reserved[t]}
@@ -393,6 +423,18 @@ def create_devices_excel(devices, balance, platforma: str, rabaty: dict = None, 
          "Wartość netto [PLN]": it.wartosc_netto}
         for it in all_budget_items
     ])
+    dev_budget_xl = build_device_budget(devices, wycena_akpia_keys or set(), rabaty=rabaty or {})
+    df_akpia_urz = pd.DataFrame([
+        {"Oznaczenie": it.oznaczenie, "Opis": it.opis, "Ilość": it.ilosc,
+         "Cena katalogowa [PLN]": it.cena_katalogowa, "Rabat [%]": it.rabat_pct,
+         "Cena netto/szt [PLN]": it.cena_netto_jed, "Wartość netto [PLN]": it.wartosc_netto}
+        for it in dev_budget_xl.items
+    ] + [{"Oznaczenie": "SUMA", "Cena katalogowa [PLN]": dev_budget_xl.suma_katalogowa,
+          "Wartość netto [PLN]": dev_budget_xl.suma_netto}]
+    ) if dev_budget_xl.items else pd.DataFrame(
+        [{"Oznaczenie": "", "Opis": "Brak zaznaczonych urządzeń (sekcja 1a w aplikacji)"}]
+    )
+
     bio = io.BytesIO()
     with pd.ExcelWriter(bio, engine="openpyxl") as writer:
         df_dev.to_excel(writer, index=False, sheet_name="Urządzenia i sygnały")
@@ -404,6 +446,7 @@ def create_devices_excel(devices, balance, platforma: str, rabaty: dict = None, 
         df_scada.to_excel(writer, index=False, sheet_name="SCADA ASIX")
         df_cmp.to_excel(writer, index=False, sheet_name="Porównanie wariantów")
         df_budget.to_excel(writer, index=False, sheet_name="Kosztorys")
+        df_akpia_urz.to_excel(writer, index=False, sheet_name="Urządzenia AKPiA")
     bio.seek(0)
     return bio
 
@@ -490,12 +533,70 @@ def render_sidebar():
     return page, {"reserve_percent": reserve_percent, "platforma": platforma, "rabaty": rabaty, "cable_length": cable_length, "asix_factor": asix_factor}
 
 
+def render_device_budget_selector(devices, rabaty: dict) -> None:
+    """
+    Checkbox-lista urządzeń obiektowych do RĘCZNEGO oznaczenia, które wchodzą
+    w zakres wyceny AKPiA (typowo: przetworniki pomiarowe). Stan trzymany w
+    st.session_state, kluczowany przez device_key() - przetrwa przeliczenia
+    w obrębie tej samej sesji, dopóki lista urządzeń się nie zmieni.
+    """
+    if "wycena_akpia_keys" not in st.session_state:
+        st.session_state.wycena_akpia_keys = set()
+
+    rows = []
+    for i, d in enumerate(devices):
+        key = device_key(d, i)
+        rows.append({
+            "Wycena AKPiA": key in st.session_state.wycena_akpia_keys,
+            "Oznaczenie": d.oznaczenie or "-",
+            "Opis": d.opis,
+            "Ilość": d.ilosc,
+            "_key": key,  # ukryta kolumna pomocnicza, nie do edycji
+        })
+    df_sel = pd.DataFrame(rows)
+
+    edited = st.data_editor(
+        df_sel,
+        column_config={
+            "Wycena AKPiA": st.column_config.CheckboxColumn(
+                "Wycena AKPiA", help="Zaznacz, jeśli to urządzenie ma trafić do kosztorysu AKPiA"
+            ),
+            "_key": None,  # ukrywa kolumnę techniczną w UI
+        },
+        disabled=["Oznaczenie", "Opis", "Ilość"],
+        hide_index=True,
+        use_container_width=True,
+        key="device_budget_editor",
+    )
+
+    # Synchronizacja stanu na podstawie tego, co inżynier zaznaczył w tabeli
+    st.session_state.wycena_akpia_keys = set(
+        edited.loc[edited["Wycena AKPiA"], "_key"]
+    )
+
+    dev_budget = build_device_budget(devices, st.session_state.wycena_akpia_keys, rabaty=rabaty)
+    if dev_budget.items:
+        st.caption(f"Zaznaczono {len(dev_budget.items)} pozycji do kosztorysu AKPiA.")
+    else:
+        st.caption("Brak zaznaczonych pozycji — żadne urządzenie obiektowe nie trafi do kosztorysu.")
+
+
 def render_results(devices, balance, project_label, platforma, rabaty, cable_length=25, asix_factor=1.2):
     """Sekcja HITL: urządzenia + bilans + PLC + okablowanie + SCADA + porównanie + kosztorys + pliki."""
     st.subheader("1. Zidentyfikowane urządzenia (do weryfikacji)")
     st.caption("Kolumna 'Źródło' pokazuje, czy sygnał pochodzi z danych (kolumna), "
                "czy z reguły typu urządzenia. Zweryfikuj pozycje z uwagami.")
     st.dataframe(build_io_dataframe(devices), use_container_width=True)
+
+    st.subheader("1a. Urządzenia obiektowe wchodzące w zakres wyceny AKPiA")
+    st.caption(
+        "Większość urządzeń obiektowych (pompy, zawory, siłowniki) fizycznie "
+        "znajduje się na hali i jest dostarczana/wyceniana poza automatyką - "
+        "program ich NIE wycenia automatycznie. Zaznacz ręcznie te pozycje "
+        "(typowo: przetworniki pomiarowe), które WCHODZĄ w zakres dostawy "
+        "AKPiA i mają trafić do kosztorysu."
+    )
+    render_device_budget_selector(devices, rabaty)
 
     st.subheader("2. Bilans sygnałów I/O")
     cols = st.columns(len(IO_TYPES) + 1)
@@ -648,6 +749,32 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
         st.warning(f"⚠ {len(budget.brak_ceny)} pozycji bez ceny katalogowej — "
                    "uzupełnij cennik, aby uzyskać pełny kosztorys.")
 
+    st.subheader("9a. Kosztorys urządzeń AKPiA (wybór ręczny)")
+    st.caption("Pozycje zaznaczone w sekcji 1a — osobno od sprzętu sterowniczego, "
+               "bo dotyczą urządzeń obiektowych (np. przetworników), a nie kart PLC/szafy/SCADA.")
+    dev_budget = build_device_budget(devices, st.session_state.get("wycena_akpia_keys", set()), rabaty=rabaty)
+    if dev_budget.items:
+        df_dev_budget = pd.DataFrame([
+            {
+                "Oznaczenie": it.oznaczenie,
+                "Opis": it.opis,
+                "Ilość": it.ilosc,
+                "Cena kat. [PLN]": f"{it.cena_katalogowa:.2f}" if it.cena_katalogowa else "BRAK",
+                "Rabat [%]": f"{it.rabat_pct:.0f}",
+                "Wartość netto [PLN]": f"{it.wartosc_netto:.2f}" if it.wartosc_netto else "-",
+            }
+            for it in dev_budget.items
+        ])
+        st.dataframe(df_dev_budget, use_container_width=True)
+        sum_cols2 = st.columns(2)
+        sum_cols2[0].metric("Suma katalogowa (AKPiA)", f"{dev_budget.suma_katalogowa:,.2f} PLN")
+        sum_cols2[1].metric("Suma netto (AKPiA)", f"{dev_budget.suma_netto:,.2f} PLN")
+        if dev_budget.brak_ceny:
+            st.warning(f"⚠ {len(dev_budget.brak_ceny)} pozycji bez ceny katalogowej — "
+                       "cennik nie zawiera jeszcze urządzeń obiektowych, uzupełnij ręcznie.")
+    else:
+        st.caption("Brak zaznaczonych urządzeń — sekcja 1a pozwala je dodać.")
+
     st.subheader("10. Weryfikacja kompletności oferty")
     cab_wires = select_cables(devices, srednia_trasa_m=cable_length)
     asix_val = select_asix(balance, wspolczynnik=asix_factor)
@@ -667,17 +794,21 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
                    "Ostateczna decyzja należy do inżyniera.")
 
     st.subheader("11. Pobierz dokumenty")
-    word_bio = create_word_report(devices, balance, project_label, platforma, rabaty, st.session_state.get("hmi_entries", []))
-    excel_bio = create_devices_excel(devices, balance, platforma, rabaty, cable_length, asix_factor, st.session_state.get("hmi_entries", []))
+    word_bio = create_word_report(devices, balance, project_label, platforma, rabaty, st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()))
+    excel_bio = create_devices_excel(devices, balance, platforma, rabaty, cable_length, asix_factor, st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()))
 
     # Dane potrzebne dla PDF (te same co dla Word/Excel, budowane raz)
     sel_for_pdf = select_plc(balance, platforma)
     cab_for_pdf = select_cabinet(balance, sel_for_pdf)
     asix_for_pdf = select_asix(balance, wspolczynnik=asix_factor)
     budget_for_pdf = calculate_budget(sel_for_pdf.items, rabaty=rabaty or {})
+    dev_budget_for_pdf = build_device_budget(
+        devices, st.session_state.get("wycena_akpia_keys", set()), rabaty=rabaty or {}
+    )
     pdf_bio = create_pdf_report(
         devices, balance, project_label, platforma,
         sel_for_pdf, cab_for_pdf, asix_for_pdf, budget_for_pdf, IO_TYPES,
+        dev_budget=dev_budget_for_pdf,
     )
 
     c1, c2, c3 = st.columns(3)
@@ -799,8 +930,8 @@ def main():
 
             # Zapis na dysk (raz)
             try:
-                word_bio = create_word_report(devices, balance, st.session_state.project_label, settings['platforma'], settings['rabaty'], st.session_state.get('hmi_entries', []))
-                excel_bio = create_devices_excel(devices, balance, settings['platforma'], settings['rabaty'], settings['cable_length'], settings['asix_factor'], st.session_state.get('hmi_entries', []))
+                word_bio = create_word_report(devices, balance, st.session_state.project_label, settings['platforma'], settings['rabaty'], st.session_state.get('hmi_entries', []), st.session_state.get('wycena_akpia_keys', set()))
+                excel_bio = create_devices_excel(devices, balance, settings['platforma'], settings['rabaty'], settings['cable_length'], settings['asix_factor'], st.session_state.get('hmi_entries', []), st.session_state.get('wycena_akpia_keys', set()))
                 save_outputs_to_disk(st.session_state.project_label, devices, balance, word_bio, excel_bio)
             except Exception as exc:
                 st.error(f"Błąd zapisu plików: {exc}")

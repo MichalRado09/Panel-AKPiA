@@ -110,6 +110,7 @@ def create_pdf_report(
     asix_sel,         # AsixSelection
     budget,           # Budget
     io_types: tuple,
+    dev_budget=None,  # DeviceBudgetSelection | None - urządzenia AKPiA (patrz device_budget.py)
 ) -> io.BytesIO:
     """
     Buduje kompletny raport PDF — te same dane co create_word_report,
@@ -202,6 +203,41 @@ def create_pdf_report(
             "Uzupełnij cennik, aby uzyskać pełny kosztorys.",
             styles["Normal"],
         ))
+
+    # --- Urządzenia AKPiA (wybór ręczny — patrz sekcja 1a w aplikacji) ---
+    if dev_budget is not None and dev_budget.items:
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("Urządzenia AKPiA (wybór ręczny)", styles["SectionHeading"]))
+        story.append(Paragraph(
+            "Urządzenia obiektowe zaznaczone przez inżyniera jako wchodzące "
+            "w zakres dostawy/wyceny AKPiA — osobno od sprzętu sterowniczego "
+            "powyżej (pompy, zawory itp. zwykle dostarcza dział technologiczny).",
+            styles["Normal"],
+        ))
+        story.append(Spacer(1, 4))
+        dev_bud_data = [["Oznaczenie", "Opis", "Ilość", "Kat. PLN", "Netto PLN"]]
+        for it in dev_budget.items:
+            dev_bud_data.append([
+                it.oznaczenie,
+                it.opis[:40],
+                str(it.ilosc),
+                f"{it.cena_katalogowa:.2f}" if it.cena_katalogowa else "BRAK",
+                f"{it.wartosc_netto:.2f}" if it.wartosc_netto else "-",
+            ])
+        dev_bud_data.append([
+            "SUMA", "", "", f"{dev_budget.suma_katalogowa:.2f}", f"{dev_budget.suma_netto:.2f}",
+        ])
+        story.append(_table(
+            dev_bud_data,
+            col_widths=[32 * mm, 70 * mm, 16 * mm, 24 * mm, 26 * mm],
+        ))
+        if dev_budget.brak_ceny:
+            story.append(Spacer(1, 6))
+            story.append(Paragraph(
+                f"Uwaga: {len(dev_budget.brak_ceny)} pozycji bez ceny katalogowej "
+                "(cennik nie zawiera jeszcze urządzeń obiektowych).",
+                styles["Normal"],
+            ))
 
     # --- Uwagi techniczne ---
     story.append(Paragraph("Uwagi techniczne", styles["SectionHeading"]))
