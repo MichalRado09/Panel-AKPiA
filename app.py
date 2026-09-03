@@ -694,7 +694,7 @@ def render_sidebar():
         )
 
     st.sidebar.markdown("---")
-    if st.sidebar.button("Wyloguj", use_container_width=True):
+    if st.sidebar.button("Wyloguj", width="stretch"):
         st.session_state.clear()
         st.rerun()
 
@@ -749,7 +749,7 @@ def render_extraction_diff_panel() -> None:
         "Domyślnie do sekcji poniżej trafia wynik OFFLINE (deterministyczny)."
     )
     if st.session_state.get("devices_ai_alternative") is not None:
-        if st.button("🔄 Użyj zamiast tego wyniku AI", use_container_width=False):
+        if st.button("🔄 Użyj zamiast tego wyniku AI", width="content"):
             devices_ai_wybrane = st.session_state.devices_ai_alternative
             st.session_state.devices = devices_ai_wybrane
             st.rerun()
@@ -804,7 +804,7 @@ def render_device_table_editor(devices: list) -> list:
         disabled=["L.p.", "Układ", "Oznaczenie", "Opis", "Sygnały", "Źródło", "Uwagi parsera"],
         num_rows="dynamic",
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         key="device_table_editor",
     )
 
@@ -889,7 +889,7 @@ def render_undecided_signal_resolver(devices: list) -> None:
             index=typy_opcje.index(podpowiedz) if podpowiedz in typy_opcje else 0,
             key=f"undecided_{i}_{si}", label_visibility="collapsed",
         )
-        if cols[2].button("Zastosuj", key=f"undecided_apply_{i}_{si}", use_container_width=True):
+        if cols[2].button("Zastosuj", key=f"undecided_apply_{i}_{si}", width="stretch"):
             if wybor != "— nie rozstrzygnięto —":
                 dev.sygnaly[si]["typ"] = wybor
                 dev.sygnaly[si]["source"] = "inzynier"
@@ -943,7 +943,7 @@ def render_device_budget_selector(devices, rabaty: dict) -> None:
         },
         disabled=["Oznaczenie", "Opis", "Ilość"],
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         key="device_budget_editor",
     )
 
@@ -1021,7 +1021,7 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
     df_plc = pd.DataFrame([
         {"Ilość": it.ilosc, "Nr katalogowy": it.nr, "Opis": it.opis} for it in sel.items
     ])
-    st.dataframe(df_plc, use_container_width=True)
+    st.dataframe(df_plc, width="stretch")
     util_cols = st.columns(len(IO_TYPES))
     for i, t in enumerate(IO_TYPES):
         u = sel.utilization.get(t, {})
@@ -1035,7 +1035,7 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
          "Urządzeń": it.ilosc_urzadzen, "Metraż [m]": it.metraz_m}
         for it in cab.items
     ])
-    st.dataframe(df_cab, use_container_width=True)
+    st.dataframe(df_cab, width="stretch")
     st.metric("Razem metraż", f"{cab.total_metraz:.0f} m",
               f"(śr. trasa {cable_length}m, naddatek +15%)")
 
@@ -1054,7 +1054,7 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
              "Cena kat. [PLN]": f"{it.cena_katalogowa:.2f}" if it.cena_katalogowa else "BRAK"}
             for it in asix.items
         ])
-        st.dataframe(df_asix, use_container_width=True)
+        st.dataframe(df_asix, width="stretch")
     for w in asix.warnings:
         st.warning(w)
 
@@ -1092,7 +1092,7 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
             {"Ilość": it.ilosc, "Model": it.nazwa, "Lokalizacja": it.lokalizacja}
             for it in hmi_sel.items
         ])
-        st.dataframe(df_hmi, use_container_width=True)
+        st.dataframe(df_hmi, width="stretch")
         if st.button("🗑 Wyczyść listę HMI"):
             st.session_state.hmi_entries = []
             st.rerun()
@@ -1106,7 +1106,7 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
          "Nazwa": it.nazwa, "Reguła": it.uwaga}
         for it in cab_sel.items
     ])
-    st.dataframe(df_cab_items, use_container_width=True)
+    st.dataframe(df_cab_items, width="stretch")
     pw = st.columns(4)
     pw[0].metric("Karty PLC", f"{cab_sel.prad_karty_ma} mA")
     pw[1].metric("Przekaźniki", f"{cab_sel.prad_przekazniki_ma} mA")
@@ -1127,7 +1127,7 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
          "Netto [PLN]": f"{v.suma_netto:,.2f}" if v.suma_netto > 0 else "brak cen"}
         for v in variants
     ])
-    st.dataframe(df_cmp, use_container_width=True)
+    st.dataframe(df_cmp, width="stretch")
 
     st.subheader("9. Kosztorys")
     budget = calculate_budget(sel.items, rabaty=rabaty)
@@ -1143,7 +1143,7 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
         }
         for it in budget.items
     ])
-    st.dataframe(df_budget, use_container_width=True)
+    st.dataframe(df_budget, width="stretch")
 
     sum_cols = st.columns(2)
     sum_cols[0].metric("Suma katalogowa", f"{budget.suma_katalogowa:,.2f} PLN")
@@ -1172,7 +1172,7 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
             }
             for it in dev_budget.items
         ])
-        st.dataframe(df_dev_budget, use_container_width=True)
+        st.dataframe(df_dev_budget, width="stretch")
         sum_cols2 = st.columns(2)
         sum_cols2[0].metric("Suma katalogowa (AKPiA)", f"{dev_budget.suma_katalogowa:,.2f} PLN")
         sum_cols2[1].metric("Suma netto (AKPiA)", f"{dev_budget.suma_netto:,.2f} PLN")
@@ -1216,16 +1216,16 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.download_button("📄 Raport (Word)", data=word_bio,
-                           file_name=f"Raport_{project_label}.docx", use_container_width=True)
+                           file_name=f"Raport_{project_label}.docx", width="stretch")
     with c2:
         st.download_button("📊 Zestawienie (Excel)", data=excel_bio,
                            file_name=f"Zestawienie_{project_label}.xlsx",
-                           type="primary", use_container_width=True)
+                           type="primary", width="stretch")
     with c3:
         st.download_button("📕 Raport (PDF)", data=pdf_bio,
-                           file_name=f"Raport_{project_label}.pdf", use_container_width=True)
+                           file_name=f"Raport_{project_label}.pdf", width="stretch")
     with c4:
-        if st.button("💾 Zapisz do historii", use_container_width=True,
+        if st.button("💾 Zapisz do historii", width="stretch",
                      help="Zapisuje bieżący stan (snapshot JSON + Word + Excel) do "
                           "historia_projektow/ i outputs/. Rób to świadomie, np. przed "
                           "wysłaniem oferty — nie każda zmiana suwaka musi zostać w archiwum."):
@@ -1331,13 +1331,13 @@ def main():
                                f"z **{total_rows}** wierszy. Analiza uwzględni wszystkie {total_rows}.")
                 else:
                     st.markdown(f"**Podgląd arkusza {sheet_label}** — {total_rows} wierszy (wszystkie widoczne).")
-                st.dataframe(excel_df.head(10), use_container_width=True)
+                st.dataframe(excel_df.head(10), width="stretch")
             except ValueError as exc:
                 st.error(str(exc))
 
         # --- Ścieżka bez AI: parsuj Excel bezpośrednio rdzeniem ---
         if excel_df is not None:
-            if st.button("⚙ Policz I/O z Excela (bez AI)", use_container_width=True):
+            if st.button("⚙ Policz I/O z Excela (bez AI)", width="stretch"):
                 devices, warns = parse_devices(excel_df)
                 st.session_state.devices = devices
                 st.session_state.project_label = build_project_label(current_files[0], current_files[1], selected_sheet)
@@ -1355,7 +1355,7 @@ def main():
         elif not api_key:
             st.error("Brak klucza API Gemini. Skonfiguruj w Ustawieniach lub secrets.toml.")
         elif st.button("🤖 Ekstrahuj urządzenia przez AI, potem policz I/O", type="primary",
-                       use_container_width=True):
+                       width="stretch"):
             with st.spinner("AI ekstrahuje listę urządzeń..."):
                 try:
                     records = run_extraction(
@@ -1380,7 +1380,7 @@ def main():
         if excel_df is not None:
             if not api_key:
                 st.caption("⚖ Weryfikacja przez AI wymaga klucza API Gemini (patrz wyżej).")
-            elif st.button("⚖ Policz + zweryfikuj przez AI", use_container_width=True,
+            elif st.button("⚖ Policz + zweryfikuj przez AI", width="stretch",
                            help="Uruchamia OBIE metody (offline i AI) na tych samych danych "
                                 "i pokazuje różnice. Zużywa dodatkowe zapytania do API - "
                                 "użyj, gdy chcesz sprawdzić jakość ekstrakcji, nie przy każdej "
@@ -1444,7 +1444,7 @@ def main():
                     snap = json.load(f)
                 st.json({"project": snap["project"], "reserve_percent": snap["reserve_percent"],
                          "balance_base": snap["balance_base"], "balance_reserved": snap["balance_reserved"]})
-                st.dataframe(pd.DataFrame(snap["devices"]), use_container_width=True)
+                st.dataframe(pd.DataFrame(snap["devices"]), width="stretch")
 
                 st.caption(
                     "Dotąd historia była archiwum wyłącznie do odczytu — zmiana rabatów "

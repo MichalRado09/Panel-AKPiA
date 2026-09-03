@@ -87,8 +87,16 @@ def validate_offer(
 def _check_io_vs_cables(balance, cable_sel, report: ValidationReport):
     """Czy są sygnały AI/AO, ale brak kabla ekranowanego (typowy błąd danych)."""
     has_analog = balance.reserved.get("AI", 0) > 0 or balance.reserved.get("AO", 0) > 0
+    # FALOWNIK liczy się jako pokrycie sygnału analogowego: core/cables.py
+    # świadomie SCALA urządzenie z AO+DO (pompa z falownikiem) w jedną pozycję
+    # "FALOWNIK", zamiast wystawiać osobny wiersz AO - a dobrany tam kabel
+    # (BiTservo 2XSLCH-J) JEST ekranowany i to on niesie sterowanie AO.
+    # Bez tego wyjątku projekt złożony z samych pomp z falownikiem (bardzo
+    # typowy w AKPiA) dostawał czerwony BŁĄD "brak kabla ekranowanego",
+    # mimo że kabel ekranowany był na liście.
     has_analog_cable = any(
-        it.typ_sygnalu in ("AI", "AO") for it in (cable_sel.items if cable_sel else [])
+        it.typ_sygnalu in ("AI", "AO", "FALOWNIK")
+        for it in (cable_sel.items if cable_sel else [])
     )
     if has_analog and not has_analog_cable:
         _add(report, Severity.ERROR,

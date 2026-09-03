@@ -54,6 +54,27 @@ def test_analog_nieznany_to_brak_danych():
     assert _typy(r) == [NO_DATA]
 
 
+def test_analog_jednostka_ma_rozpoznawana_w_roznych_zapisach():
+    """mA/mV jako JEDNOSTKA (z cyfrą przed) musi dawać AI."""
+    for fraza in ("4-20mA", "4-20 mA", "0-20mA", "20 mV", "sygnał 4-20 mA"):
+        assert _typy(classify_analog_phrase(fraza)) == ["AI"], fraza
+
+
+def test_analog_ma_w_srodku_slowa_nie_jest_jednostka():
+    """
+    REGRESJA: marker "ma" był dopasowywany jako DOWOLNY PODCIĄG, więc
+    przypadkowe słowa zawierające "ma" były po cichu klasyfikowane jako AI —
+    zawyżając bilans AI, liczbę kart analogowych i kosztorys. Najgorszy
+    przypadek: "Manometr wskazujący" (lokalny wskaźnik BEZ sygnału do PLC)
+    oraz "Nie ma sygnału", które znaczy dokładnie coś przeciwnego.
+    Zgodnie z zasadą modułu: czego nie rozpoznajemy, tego NIE zgadujemy.
+    """
+    for fraza in ("Automatyczna regulacja", "Sygnał z magistrali",
+                  "Manometr wskazujący", "Informacja z szafy",
+                  "Normalny tryb", "Nie ma sygnału"):
+        assert _typy(classify_analog_phrase(fraza)) == [NO_DATA], fraza
+
+
 # --- device_rules -------------------------------------------------------------
 
 def test_typ_przetwornik_temp():
@@ -581,6 +602,45 @@ def test_validator_pusta_lista_urzadzen():
     bal.base = dict(bal.reserved)
     report = validate_offer([], bal, None, None, None, None, None)
     assert any("Urządzenia" in i.category for i in report.errors)
+
+
+def test_validator_kabel_falownikowy_pokrywa_sygnal_analogowy():
+    """
+    REGRESJA: projekt złożony z samych pomp z falownikiem (bardzo typowy
+    w AKPiA) dostawał FAŁSZYWY czerwony BŁĄD "brak kabla ekranowanego",
+    mimo że na liście kablowej był BiTservo 2XSLCH-J — kabel ekranowany,
+    który właśnie niesie sterowanie AO. Przyczyna: core/cables.py scala
+    urządzenie AO+DO w pozycję "FALOWNIK" (zamiast osobnego wiersza AO),
+    a walidator szukał wyłącznie typów "AI"/"AO".
+    """
+    import pandas as pd
+    from core.plc_selector import select_plc
+    from core.cables import select_cables
+    from core.cabinet import select_cabinet
+    from core.scada_asix import select_asix
+    from core.parser import parse_devices
+
+    df = pd.DataFrame([{
+        "L.p.": 1, "Układ": "RTO", "Urządzenie": "P1",
+        "Typ / Opis": "Pompa obiegowa - napęd inwerterowy", "Ilość": 3,
+    }])
+    devs, _ = parse_devices(df)
+    bal = count_io(devs, reserve_percent=30)
+    assert bal.reserved["AO"] > 0  # falownik faktycznie wnosi sygnał analogowy
+
+    sel = select_plc(bal, "Beckhoff CX9020")
+    cab = select_cables(devs, srednia_trasa_m=25)
+    assert any(it.typ_sygnalu == "FALOWNIK" for it in cab.items)
+    assert not any(it.typ_sygnalu in ("AI", "AO") for it in cab.items)
+
+    report = validate_offer(
+        devs, bal, sel, cab, select_cabinet(bal, sel), select_asix(bal),
+        calculate_budget(sel.items, rabaty={}),
+    )
+    assert not any(i.category == "Kable" for i in report.errors), (
+        "Kabel falownikowy JEST ekranowany — walidator nie może zgłaszać "
+        "braku kabla ekranowanego"
+    )
 
 
 def test_validator_czysty_raport_gdy_wszystko_ok():

@@ -332,3 +332,47 @@ Zweryfikowano brak fałszywych alarmów na 3 innych plikach bez tego wzorca.
 **63 testy, wszystkie przechodzą**, w tym 2 nowe testy regresyjne chroniące
 przed dokładnie tym błędem (mieszanie obszarów instalacji, usuwanie
 oznaczonych przyrządów).
+
+## Audyt reguł: dwa błędy zawyżające ofertę + zabezpieczenie środowiska
+
+Przegląd modułów, które wcześniej nie były audytowane pod kątem samych
+reguł (nie tylko przepływu). Oba znalezione błędy działały **po cichu** —
+nic się nie wywalało, po prostu liczby w ofercie były złe.
+
+**1. Marker `ma` dopasowywany jako dowolny podciąg (`core/signal_rules.py`).**
+Heurystyka sygnału analogowego szukała w tekście `"ma"` (od miliamperów),
+ale robiła to jako zwykły podciąg — więc trafiała w przypadkowe słowa
+i po cichu klasyfikowała je jako AI. Zmierzone na realistycznych frazach:
+„Auto**ma**tyczna regulacja", „Sygnał z **ma**gistrali", „Nor**ma**lny tryb",
+„Infor**ma**cja z szafy", a najgorzej: „**Ma**nometr wskazujący" — czyli
+lokalny wskaźnik BEZ sygnału do sterownika — oraz „Nie **ma** sygnału",
+które znaczy dokładnie coś przeciwnego. Każde takie trafienie zawyżało
+bilans AI, a przez to liczbę kart analogowych i kosztorys.
+Naprawa: `mA`/`mV` rozpoznawane wyłącznie jako JEDNOSTKA (wymagana cyfra
+przed: `4-20mA`, `20 mV`). Reszta wraca do BRAK DANYCH — zgodnie
+z nadrzędną zasadą modułu, że czego nie rozpoznajemy, tego nie zgadujemy.
+
+**2. Fałszywy czerwony BŁĄD dla projektów z falownikami (`core/validator.py`).**
+Projekt złożony z pomp z falownikiem (bardzo typowy w AKPiA) dostawał
+w sekcji 10 czerwony błąd „brak kabla ekranowanego", mimo że kabel
+ekranowany BYŁ na liście. Przyczyna: `core/cables.py` świadomie scala
+urządzenie AO+DO w jedną pozycję „FALOWNIK" (kabel BiTservo, ekranowany,
+niesie sterowanie AO), a walidator szukał wyłącznie pozycji typu AI/AO.
+Inżynier był więc wysyłany za błędem, którego nie było.
+
+**Zabezpieczenie środowiska (nie zmienia logiki, chroni przed powtórką):**
+- `requirements.txt` ma teraz **przypięte wersje**. Bez nich świeża
+  instalacja brała najnowsze biblioteki z dnia wdrożenia — dokładnie tak
+  powstał wcześniejszy crash startowy po zmianie zachowania `st.secrets`
+  w nowszym Streamlit, bez żadnej zmiany w naszym kodzie.
+- `use_container_width` (22 wywołania) zamienione na `width="stretch"` /
+  `width="content"` — stary parametr jest w Streamlit oznaczony jako
+  przestarzały i zapowiedziany do usunięcia.
+- **CI (`.github/workflows/testy.yml`)** uruchamia pełny pakiet testów
+  przy każdym pushu i pull requeście, plus sprawdza, czy `app.py` się
+  importuje (testy `core/` celowo nie zależą od Streamlit, więc same
+  tego nie złapią).
+
+**108 testów, wszystkie przechodzą**, w tym 3 nowe regresyjne pilnujące
+obu powyższych błędów. Zweryfikowano też ręcznym przebiegiem aplikacji
+(upload → bilans → dobór → walidacja → raporty).

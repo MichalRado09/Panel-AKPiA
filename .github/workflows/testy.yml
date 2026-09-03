@@ -1,0 +1,40 @@
+name: Testy
+
+# Uruchamia pełny pakiet testów jednostkowych rdzenia (core/) przy każdym
+# pushu i pull requeście. Cel: żadna zmiana w regułach doboru, klasyfikacji
+# sygnałów czy liczeniu I/O nie trafia do repo bez przejścia testów —
+# te reguły wprost przekładają się na liczby w ofercie dla klienta.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:   # pozwala uruchomić ręcznie z zakładki Actions
+
+jobs:
+  testy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ustaw Pythona
+        uses: actions/setup-python@v5
+        with:
+          # 3.11 — kod używa składni `str | None` i dataclass, wymaga >=3.10
+          python-version: "3.11"
+          cache: pip
+
+      - name: Zainstaluj zależności
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Testy jednostkowe
+        run: python -m pytest tests/ -v
+
+      - name: Sprawdź, czy aplikacja się importuje
+        # Łapie błędy składni i złe importy w app.py, których testy core/
+        # nie widzą (testy celowo nie zależą od Streamlit).
+        run: python -c "import app; print('app.py importuje się poprawnie')"
