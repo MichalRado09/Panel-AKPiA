@@ -376,3 +376,46 @@ Inżynier był więc wysyłany za błędem, którego nie było.
 **108 testów, wszystkie przechodzą**, w tym 3 nowe regresyjne pilnujące
 obu powyższych błędów. Zweryfikowano też ręcznym przebiegiem aplikacji
 (upload → bilans → dobór → walidacja → raporty).
+
+## Kolumna „Pomiar? lokalny/zdalny" — koniec dublowania bilansu
+
+Wcześniej opisane w tym pliku jako ZNANA GRANICA („rozwiązanie poza zakresem
+obecnego formatu") — teraz obsłużone, bo to ta sama klasa błędu co marker
+`ma` wyżej: aplikacja po cichu doliczała sygnały, których fizycznie nie ma.
+
+W realnych zestawieniach (potwierdzone na OFE_381) ten sam punkt pomiarowy
+bywa rozpisany na **dwa wiersze o identycznym oznaczeniu i opisie** —
+raz `lokalny`, raz `zdalny`. Sygnał do sterownika daje wyłącznie `zdalny`;
+`lokalny` to przyrząd czytany wzrokowo na obiekcie (manometr, termometr
+tarczowy). Parser, który tej kolumny nie znał, liczył oba wiersze jednakowo.
+
+**Zmierzone na próbce testowej (14 wierszy = 7 fizycznych punktów):**
+
+| | przed | po | fizycznie |
+|---|---|---|---|
+| AI | 6 | **3** | 3 przepływomierze |
+| DI | 6 | **3** | 3 impulsy |
+| BRAK DANYCH | 8 | **4** | 4 czujniki o niejednoznacznym typie |
+
+Zawyżone AI przekłada się wprost na karty analogowe, złączki PT 4-HESI,
+pobór prądu przetworników, metraż kabla ekranowanego, liczbę zmiennych
+ASIX i sumę kosztorysu — czyli na cenę w ofercie.
+
+Zasady, które zostały zachowane:
+- **Wiersz `lokalny` NIE znika z listy** — wskaźnik bywa w zakresie dostawy
+  AKPiA, więc można go wycenić w sekcji 1a. Znika tylko jego I/O.
+- **Dane jawne wygrywają** — jeśli mimo `lokalny` ktoś wpisał sygnał wprost
+  w kolumnie, sygnał zostaje, a parser zgłasza sprzeczność do weryfikacji.
+- **Nic po cichu** — inżynier dostaje zbiorcze ostrzeżenie, ile pozycji
+  potraktowano jako lokalne i dlaczego.
+- **Obie ścieżki tak samo** — pole `pomiar` dodane też do kontraktu z AI
+  (`core/ai_contract.py`), żeby ekstrakcja AI i parser offline nie rozjechały
+  się na tym samym pliku.
+
+Przy okazji: sygnały rozstrzygnięte ręcznie w sekcji 1b (`source="inzynier"`)
+nie były wcześniej nigdzie zliczane, więc walidator liczył udział sygnałów
+„wywnioskowanych z typu urządzenia" na zaniżonym mianowniku i ostrzegał
+nawet wtedy, gdy inżynier rozstrzygnął wszystko ręcznie. Teraz mają własną
+pozycję w rozkładzie źródeł.
+
+**111 testów, wszystkie przechodzą.**

@@ -549,30 +549,73 @@ def test_parser_ofe381_puste_kolumny_sygnalow_uzywaja_fallbacku():
     assert bal.source_counts["typ_urzadzenia"] > 0
 
 
-def test_parser_ofe381_lokalny_zdalny_nie_jest_rozrozniany():
+def test_parser_ofe381_pomiar_lokalny_nie_wnosi_sygnalow():
     """
-    ZNANA GRANICA obecnego formatu (decyzja: 'prosty format' z wczesnej fazy
-    projektu): kolumna 'Pomiar? lokalny/zdalny' rozbija każdy czujnik na
-    2 wiersze. 'Lokalny' (wskaźnik na obiekcie, bez transmisji do PLC) i
-    'zdalny' (sygnał AI do sterownika) są liczone JEDNAKOWO — parser prostego
-    formatu nie zna kolumny 'Pomiar?', więc nie potrafi wykluczyć 'lokalny'.
-    Efekt: bilans AI dla tego typu plików może być zawyżony (dublowanie
-    pozycji lokalny+zdalny). W pełnym pliku źródłowym OFE_381 potwierdzono
-    39 par lokalny/zdalny; próbka testowa zawiera 7 par (14 wierszy) —
-    reprezentatywny podzbiór tej samej struktury.
-    Rozwiązanie (poza zakresem obecnego formatu): rozszerzyć parser o obsługę
-    kolumny 'Pomiar?' i pomijać wiersze 'lokalny' przy zliczaniu I/O.
+    REGRESJA (wcześniej udokumentowana ZNANA GRANICA, teraz naprawiona):
+    kolumna 'Pomiar? lokalny/zdalny' rozbija każdy punkt pomiarowy na 2 wiersze
+    o TYM SAMYM oznaczeniu i opisie. Sygnał do PLC daje wyłącznie 'zdalny';
+    'lokalny' to wskaźnik czytany wzrokowo na obiekcie. Parser, który tej
+    kolumny nie znał, liczył oba wiersze jednakowo i DUBLOWAŁ bilans —
+    a przez to karty analogowe, złączki, metraż kabli i kosztorys.
+
+    Zmierzone na tej próbce PRZED poprawką: AI=6, DI=6, BRAK DANYCH=8.
+    Fizycznie jest tam 7 punktów: 3 przepływomierze (AI + impuls DI)
+    i 4 czujniki ciśnienia/temperatury (typ niejednoznaczny -> BRAK DANYCH).
     """
     import pandas as pd
     path = os.path.join(os.path.dirname(__file__), "fixtures", "ofe381_sample.xlsx")
     df = pd.read_excel(path, sheet_name=0)
-    if "Pomiar?" in df.columns:
-        counts = df["Pomiar?"].value_counts(dropna=True)
-        n_lokalny = counts.get("lokalny", 0)
-        n_zdalny = counts.get("zdalny", 0)
-        assert n_lokalny == n_zdalny == 7  # w próbce: 7 par (w pełnym pliku: 39)
-        # Parser prostego formatu NIE rozróżnia tych wierszy — oba wnoszą
-        # sygnał AI wg reguły typu urządzenia, co jest znanym uproszczeniem.
+    counts = df["Pomiar?"].value_counts(dropna=True)
+    assert counts.get("lokalny", 0) == counts.get("zdalny", 0) == 7
+
+    devs, warns = parse_devices(df)
+    bal = count_io(devs, reserve_percent=0)
+
+    # Liczy TYLKO wiersz 'zdalny' z każdej pary — nie podwójnie.
+    assert bal.base["AI"] == 3, f"AI zdublowane: {bal.base}"
+    assert bal.base["DI"] == 3, f"DI zdublowane: {bal.base}"
+    assert len(bal.undecided) == 4, f"BRAK DANYCH zdublowane: {len(bal.undecided)}"
+
+    # Wiersze lokalne ZOSTAJĄ na liście (mogą być w zakresie dostawy AKPiA
+    # i podlegać wycenie w sekcji 1a) - tylko bez sygnałów I/O.
+    assert len(devs) == 14
+    lokalne = [d for d in devs if d.pomiar.strip().lower() == "lokalny"]
+    assert len(lokalne) == 7
+    assert all(d.sygnaly == [] for d in lokalne)
+
+    # Nic nie znika po cichu - inżynier dostaje jawne podsumowanie.
+    assert any("POMIAR LOKALNY" in w for w in warns)
+
+
+def test_pomiar_lokalny_nie_nadpisuje_sygnalu_jawnego():
+    """
+    Dane JAWNE mają pierwszeństwo nad regułą — jeśli mimo 'Pomiar? = lokalny'
+    ktoś wpisał sygnał wprost w kolumnie, sygnał zostaje (a inżynier dostaje
+    ostrzeżenie o sprzeczności). To ta sama zasada, co w całym module:
+    kolumna > reguła typu urządzenia.
+    """
+    import pandas as pd
+    df = pd.DataFrame([{
+        "L.p.": 1, "Urządzenie": "PI_9", "Typ / Opis": "Czujnik ciśnienia",
+        "Ilość": 1, "Pomiar?": "lokalny",
+        "Sygnał Analogowy": "4-20mA", "Sygnał Cyfrowy": "",
+    }])
+    devs, _ = parse_devices(df)
+    assert _typy(devs[0].sygnaly) == ["AI"]
+    assert any("Konflikt danych" in w for w in devs[0].warnings)
+
+
+def test_pomiar_zdalny_i_pusty_zachowuja_sie_jak_dotad():
+    """Tylko rdzeń 'lokaln' wyłącza regułę — 'zdalny' i pusta komórka nie."""
+    import pandas as pd
+    df = pd.DataFrame([
+        {"L.p.": 1, "Urządzenie": "FL_1", "Typ / Opis": "Przepływomierz",
+         "Ilość": 1, "Pomiar?": "zdalny"},
+        {"L.p.": 2, "Urządzenie": "FL_2", "Typ / Opis": "Przepływomierz",
+         "Ilość": 1, "Pomiar?": ""},
+    ])
+    devs, _ = parse_devices(df)
+    assert all(d.sygnaly for d in devs), "reguła typu urządzenia musi nadal działać"
 
 
 # --- validator: walidacja spójności oferty ------------------------------------
@@ -602,6 +645,31 @@ def test_validator_pusta_lista_urzadzen():
     bal.base = dict(bal.reserved)
     report = validate_offer([], bal, None, None, None, None, None)
     assert any("Urządzenia" in i.category for i in report.errors)
+
+
+def test_sygnal_rozstrzygniety_recznie_nie_liczy_sie_jako_wywnioskowany():
+    """
+    Sygnał rozstrzygnięty ręcznie w sekcji 1b ma source="inzynier". Wcześniej
+    ten source nie istniał w source_counts, więc taki sygnał znikał z rozkładu
+    źródeł, a walidator liczył udział "wywnioskowanych z typu urządzenia" na
+    zaniżonym mianowniku — ostrzeżenie nie schodziło, choćby inżynier
+    rozstrzygnął wszystko ręcznie.
+    """
+    from core.parser import Device
+
+    d = Device()
+    d.opis, d.ilosc = "Czujnik", 1
+    d.sygnaly = [
+        {"typ": "AI", "nazwa": "rozstrzygnięty", "source": "inzynier"},
+        {"typ": "DI", "nazwa": "z reguły", "source": "typ_urzadzenia"},
+    ]
+    bal = count_io([d], reserve_percent=0)
+    assert bal.source_counts["inzynier"] == 1
+    assert bal.source_counts["typ_urzadzenia"] == 1
+
+    # 1 z 2 sygnałów wywnioskowany (50%) -> poniżej progu 70%, brak ostrzeżenia
+    report = validate_offer([d], bal, None, None, None, None, None)
+    assert not any("wywnioskowano z typu" in i.message for i in report.warnings)
 
 
 def test_validator_kabel_falownikowy_pokrywa_sygnal_analogowy():

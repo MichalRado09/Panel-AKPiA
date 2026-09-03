@@ -6,10 +6,20 @@ name: Testy
 # te reguły wprost przekładają się na liczby w ofercie dla klienta.
 
 on:
+  # Uwaga na duplikaty: branch z otwartym PR-em łapie OBA wyzwalacze naraz,
+  # więc te same testy leciałyby dwa razy na jeden push. Dlatego "push"
+  # zawężony do main (pilnuje gałęzi głównej), a gałęzie robocze pokrywa
+  # "pull_request". Gałąź bez PR-a testujesz ręcznie przez workflow_dispatch.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:   # pozwala uruchomić ręcznie z zakładki Actions
+
+# Kolejny push do tej samej gałęzi anuluje poprzedni, jeszcze trwający
+# przebieg - nie ma sensu czekać na wynik dla kodu, który już jest nieaktualny.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   testy:

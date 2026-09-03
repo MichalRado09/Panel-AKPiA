@@ -163,7 +163,11 @@ def _check_inferred_signals_ratio(balance, report: ValidationReport):
     """Jeśli >70% sygnałów pochodzi z reguły typu (nie z jawnych danych) — ostrzeżenie."""
     kolumna = balance.source_counts.get("kolumna", 0)
     typ = balance.source_counts.get("typ_urzadzenia", 0)
-    total = kolumna + typ
+    # Sygnały rozstrzygnięte ręcznie przez inżyniera (sekcja 1b) są decyzją
+    # człowieka, więc liczą się do mianownika, ale NIE jako "wywnioskowane" -
+    # inaczej ostrzeżenie nie schodziło, choćby inżynier rozstrzygnął wszystko.
+    inzynier = balance.source_counts.get("inzynier", 0)
+    total = kolumna + typ + inzynier
     if total > 0 and typ / total > 0.7:
         _add(report, Severity.WARNING,
              f"{typ}/{total} sygnałów ({typ/total:.0%}) wywnioskowano z typu "

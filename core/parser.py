@@ -45,6 +45,10 @@ _COLUMN_ALIASES = {
     "cyfrowy":   ["sygnał cyfrow", "sygnal cyfrow", "cyfrowy", "di/do"],
     "komunikacja":["komunikacja", "modbus", "profinet", "sieć", "siec"],
     "uwagi":     ["uwagi", "komentarz", "notatki"],
+    # Kolumna rozróżniająca pomiar LOKALNY (wskaźnik na obiekcie, bez
+    # transmisji do sterownika) od ZDALNEGO (sygnał do PLC) - patrz
+    # _is_pomiar_lokalny() i komentarz przy nim.
+    "pomiar":    ["pomiar?", "pomiar"],
 }
 
 
@@ -65,6 +69,10 @@ class Device:
     napiecie: str = ""
     komunikacja: str = ""
     uwagi: str = ""
+    # Surowa treść kolumny "Pomiar?" ("lokalny"/"zdalny"), jeśli plik ją ma.
+    # Zachowywana do audytu - inżynier widzi w snapshocie, na jakiej podstawie
+    # parser pominął (albo nie) regułę typu urządzenia dla tego wiersza.
+    pomiar: str = ""
     # Sygnały rozbite na osobne pozycje z typem DI/DO/AI/AO/BRAK DANYCH
     sygnaly: list[dict] = field(default_factory=list)
     # Ostrzeżenia parsera dla tego wiersza (trafiają do uwag inżyniera)
@@ -160,6 +168,44 @@ def _is_empty_row(row: pd.Series, col_map: dict) -> bool:
     return not opis and not ozn
 
 
+def _is_pomiar_lokalny(value: str) -> bool:
+    """
+    Czy kolumna "Pomiar?" oznacza wskaźnik LOKALNY - czyli przyrząd czytany
+    wzrokowo na obiekcie (manometr, termometr tarczowy), BEZ transmisji
+    sygnału do sterownika.
+
+    DLACZEGO TO MA ZNACZENIE: w realnych zestawieniach (potwierdzone na
+    OFE_381) ten sam punkt pomiarowy bywa rozpisany na DWA wiersze o tym
+    samym oznaczeniu i opisie - raz "lokalny", raz "zdalny". Sygnał do PLC
+    daje tylko "zdalny". Parser, który nie zna tej kolumny, liczy oba wiersze
+    tak samo i DUBLUJE bilans AI - a przez to karty analogowe, złączki,
+    metraż kabli i kosztorys. Zmierzone na próbce OFE_381: 14 wierszy =
+    7 fizycznych punktów, bilans AI=6/DI=6 zamiast poprawnego AI=3/DI=3.
+
+    Celowo wąskie dopasowanie (rdzeń "lokaln"): cokolwiek innego - "zdalny",
+    pusta komórka, nieznana konwencja - zachowuje się dokładnie jak dotąd.
+    """
+    return _normalize_pl(value).strip().startswith("lokaln")
+
+
+def _pomiar_lokalny_warnings(devices: list[Device]) -> list[str]:
+    """
+    Podsumowanie pomiarów lokalnych - nic nie znika po cichu: inżynier ma
+    zobaczyć, ile pozycji NIE wniosło sygnałów I/O i dlaczego. Wspólne dla
+    ścieżki Excel i AI, żeby obie raportowały identycznie.
+    """
+    n_lokalne = sum(1 for d in devices if _is_pomiar_lokalny(d.pomiar))
+    if not n_lokalne:
+        return []
+    return [
+        f"ℹ POMIAR LOKALNY: {n_lokalne} pozycji oznaczono w kolumnie 'Pomiar?' "
+        f"jako lokalne (wskaźnik na obiekcie, bez transmisji do sterownika) - "
+        f"nie wnoszą sygnałów I/O. W zestawieniach, gdzie ten sam punkt jest "
+        f"rozpisany na parę lokalny+zdalny, sygnał liczy wyłącznie wiersz "
+        f"'zdalny'. Pozycje zostają na liście (można je wycenić w sekcji 1a)."
+    ]
+
+
 def _is_infrastructure(opis: str) -> bool:
     """
     Pozycje, które z definicji nie generują I/O sterownika (nie ostrzegamy o nich):
@@ -216,6 +262,7 @@ def parse_devices(df: pd.DataFrame) -> tuple[list[Device], list[str]]:
         dev.napiecie = _clean(row.get(col_map.get("napiecie", ""), ""))
         dev.komunikacja = _clean(row.get(col_map.get("komunikacja", ""), ""))
         dev.uwagi = _clean(row.get(col_map.get("uwagi", ""), ""))
+        dev.pomiar = _clean(row.get(col_map.get("pomiar", ""), ""))
 
         raw_qty = row.get(col_map.get("ilosc", ""), None)
         qty, flag, qty_warn = _parse_quantity(raw_qty)
@@ -231,12 +278,14 @@ def parse_devices(df: pd.DataFrame) -> tuple[list[Device], list[str]]:
         # Sygnały: jednolita logika (kolumny + fallback typu urządzenia)
         analog_raw = _clean(row.get(col_map.get("analog", ""), ""))
         cyfrowy_raw = _clean(row.get(col_map.get("cyfrowy", ""), ""))
-        _attach_signals(dev, analog_raw, cyfrowy_raw)
+        _attach_signals(dev, analog_raw, cyfrowy_raw, _is_pomiar_lokalny(dev.pomiar))
 
         devices.append(dev)
 
     devices, dedup_warnings = _deduplicate_hierarchical_aggregates(devices)
     global_warnings.extend(dedup_warnings)
+
+    global_warnings.extend(_pomiar_lokalny_warnings(devices))
 
     return devices, global_warnings
 
@@ -413,7 +462,8 @@ def _deduplicate_hierarchical_aggregates(
     return result, warnings
 
 
-def _attach_signals(dev: Device, analog_raw: str, cyfrowy_raw: str) -> None:
+def _attach_signals(dev: Device, analog_raw: str, cyfrowy_raw: str,
+                    pomiar_lokalny: bool = False) -> None:
     """
     Przypisuje sygnały do urządzenia wg jednolitej reguły (wspólnej dla Excela i AI-JSON):
       1) sygnały jawne z kolumn (source="kolumna"),
@@ -422,6 +472,11 @@ def _attach_signals(dev: Device, analog_raw: str, cyfrowy_raw: str) -> None:
          bez rozstrzygnięcia w źródle - patrz device_rules.py) dają NO_DATA, tak samo
          jak nierozpoznany sygnał cyfrowy - trafia do balance.undecided,
       3) ostrzeżenia dla BRAK DANYCH i nierozpoznanych typów.
+
+    pomiar_lokalny: wiersz oznaczony w źródle jako pomiar LOKALNY (wskaźnik
+    na obiekcie, bez transmisji do PLC - patrz _is_pomiar_lokalny). Wyłącza
+    WYŁĄCZNIE regułę typu urządzenia; sygnał wpisany jawnie w kolumnie nadal
+    wygrywa, bo w całym module dane jawne mają pierwszeństwo nad regułą.
     """
     jawne = []
     jawne.extend(classify_analog_phrase(analog_raw))
@@ -430,7 +485,27 @@ def _attach_signals(dev: Device, analog_raw: str, cyfrowy_raw: str) -> None:
         s.setdefault("source", "kolumna")
     dev.sygnaly.extend(jawne)
 
-    if not jawne:  # kolumny puste -> reguła typu urządzenia (decyzja "B")
+    if jawne:
+        if pomiar_lokalny:
+            dev.warnings.append(
+                "Konflikt danych: kolumna 'Pomiar?' mówi LOKALNY (wskaźnik bez "
+                "transmisji do PLC), ale sygnał jest wpisany JAWNIE w kolumnie. "
+                "Użyto sygnału jawnego - dane jawne mają pierwszeństwo. Zweryfikuj, "
+                "które jest poprawne."
+            )
+    elif pomiar_lokalny:
+        # Wskaźnik lokalny nie wysyła nic do sterownika, więc NIE stosujemy
+        # reguły typu urządzenia - inaczej "Czujnik ciśnienia" dołożyłby tu
+        # sygnał AI, którego fizycznie nie ma. Urządzenie ZOSTAJE na liście
+        # (można je wycenić w sekcji 1a - wskaźnik bywa w zakresie dostawy),
+        # tylko bez sygnałów I/O.
+        dev.warnings.append(
+            "Pomiar LOKALNY (wskaźnik na obiekcie) - nie generuje sygnału do "
+            "sterownika, więc reguła typu urządzenia NIE została zastosowana. "
+            "Jeśli ten punkt jednak ma transmisję do PLC, popraw kolumnę "
+            "'Pomiar?' albo wpisz sygnał jawnie."
+        )
+    else:  # kolumny puste -> reguła typu urządzenia (decyzja "B")
         inferred, _pattern = infer_signals_from_type(dev.opis)
         if inferred:
             dev.sygnaly.extend(inferred)
@@ -489,6 +564,7 @@ def _device_from_record(rec: dict) -> Device:
     dev.napiecie = _clean(rec.get("napiecie", ""))
     dev.komunikacja = _clean(rec.get("komunikacja", ""))
     dev.uwagi = _clean(rec.get("uwagi", ""))
+    dev.pomiar = _clean(rec.get("pomiar", ""))
 
     raw_qty = rec.get("ilosc", None)
     qty, flag, qty_warn = _parse_quantity(raw_qty)
@@ -509,7 +585,8 @@ def _device_from_record(rec: dict) -> Device:
         dev.moc_kw = moc
         dev.warnings.extend(moc_warn)
 
-    _attach_signals(dev, _clean(rec.get("analog", "")), _clean(rec.get("cyfrowy", "")))
+    _attach_signals(dev, _clean(rec.get("analog", "")), _clean(rec.get("cyfrowy", "")),
+                    _is_pomiar_lokalny(dev.pomiar))
     return dev
 
 
@@ -569,6 +646,7 @@ def parse_ai_devices(records: list[dict]) -> tuple[list[Device], list[str]]:
 
         devices, dedup_warnings = _deduplicate_hierarchical_aggregates(devices)
         global_warnings.extend(dedup_warnings)
+        global_warnings.extend(_pomiar_lokalny_warnings(devices))
 
     return devices, global_warnings
 
