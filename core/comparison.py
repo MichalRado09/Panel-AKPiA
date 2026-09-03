@@ -48,14 +48,24 @@ def compare_variants(
     results: list[VariantSummary] = []
 
     for plat in platformy:
-        sel = select_plc(balance, plat)
+        try:
+            sel = select_plc(balance, plat)
+        except FileNotFoundError:
+            # Platforma zarejestrowana w PLATFORMY, ale bez pliku katalogu w
+            # katalogi/ (np. dodana do słownika, a CSV jeszcze nie dorobiony) -
+            # pomijamy ją w porównaniu zamiast wywalać CAŁĄ tabelę dla
+            # wszystkich platform z powodu jednej brakującej.
+            continue
         budget = calculate_budget(sel.items, rabaty=rabaty or {})
 
         vs = VariantSummary(platforma=plat)
 
-        # CPU
+        # CPU rozpoznawany po katalog_typ (klucz z CSV), nie po dopasowaniu
+        # tekstowym numeru katalogowego - patrz identyczna poprawka i
+        # uzasadnienie w core/cabinet.py (numer CPU Siemensa nie zawiera
+        # ani "CPU", ani "CX").
         for it in sel.items:
-            if it.typ == "systemowy" and ("CPU" in it.nr.upper() or "CX" in it.nr.upper()):
+            if it.katalog_typ == "CPU":
                 vs.cpu = it.nr
                 break
 

@@ -332,3 +332,168 @@ Zweryfikowano brak fałszywych alarmów na 3 innych plikach bez tego wzorca.
 **63 testy, wszystkie przechodzą**, w tym 2 nowe testy regresyjne chroniące
 przed dokładnie tym błędem (mieszanie obszarów instalacji, usuwanie
 oznaczonych przyrządów).
+
+## Audyt reguł: dwa błędy zawyżające ofertę + zabezpieczenie środowiska
+
+Przegląd modułów, które wcześniej nie były audytowane pod kątem samych
+reguł (nie tylko przepływu). Oba znalezione błędy działały **po cichu** —
+nic się nie wywalało, po prostu liczby w ofercie były złe.
+
+**1. Marker `ma` dopasowywany jako dowolny podciąg (`core/signal_rules.py`).**
+Heurystyka sygnału analogowego szukała w tekście `"ma"` (od miliamperów),
+ale robiła to jako zwykły podciąg — więc trafiała w przypadkowe słowa
+i po cichu klasyfikowała je jako AI. Zmierzone na realistycznych frazach:
+„Auto**ma**tyczna regulacja", „Sygnał z **ma**gistrali", „Nor**ma**lny tryb",
+„Infor**ma**cja z szafy", a najgorzej: „**Ma**nometr wskazujący" — czyli
+lokalny wskaźnik BEZ sygnału do sterownika — oraz „Nie **ma** sygnału",
+które znaczy dokładnie coś przeciwnego. Każde takie trafienie zawyżało
+bilans AI, a przez to liczbę kart analogowych i kosztorys.
+Naprawa: `mA`/`mV` rozpoznawane wyłącznie jako JEDNOSTKA (wymagana cyfra
+przed: `4-20mA`, `20 mV`). Reszta wraca do BRAK DANYCH — zgodnie
+z nadrzędną zasadą modułu, że czego nie rozpoznajemy, tego nie zgadujemy.
+
+**2. Fałszywy czerwony BŁĄD dla projektów z falownikami (`core/validator.py`).**
+Projekt złożony z pomp z falownikiem (bardzo typowy w AKPiA) dostawał
+w sekcji 10 czerwony błąd „brak kabla ekranowanego", mimo że kabel
+ekranowany BYŁ na liście. Przyczyna: `core/cables.py` świadomie scala
+urządzenie AO+DO w jedną pozycję „FALOWNIK" (kabel BiTservo, ekranowany,
+niesie sterowanie AO), a walidator szukał wyłącznie pozycji typu AI/AO.
+Inżynier był więc wysyłany za błędem, którego nie było.
+
+**Zabezpieczenie środowiska (nie zmienia logiki, chroni przed powtórką):**
+- `requirements.txt` ma teraz **przypięte wersje**. Bez nich świeża
+  instalacja brała najnowsze biblioteki z dnia wdrożenia — dokładnie tak
+  powstał wcześniejszy crash startowy po zmianie zachowania `st.secrets`
+  w nowszym Streamlit, bez żadnej zmiany w naszym kodzie.
+- `use_container_width` (22 wywołania) zamienione na `width="stretch"` /
+  `width="content"` — stary parametr jest w Streamlit oznaczony jako
+  przestarzały i zapowiedziany do usunięcia.
+- **CI (`.github/workflows/testy.yml`)** uruchamia pełny pakiet testów
+  przy każdym pushu i pull requeście, plus sprawdza, czy `app.py` się
+  importuje (testy `core/` celowo nie zależą od Streamlit, więc same
+  tego nie złapią).
+
+**108 testów, wszystkie przechodzą**, w tym 3 nowe regresyjne pilnujące
+obu powyższych błędów. Zweryfikowano też ręcznym przebiegiem aplikacji
+(upload → bilans → dobór → walidacja → raporty).
+
+## Kolumna „Pomiar? lokalny/zdalny" — koniec dublowania bilansu
+
+Wcześniej opisane w tym pliku jako ZNANA GRANICA („rozwiązanie poza zakresem
+obecnego formatu") — teraz obsłużone, bo to ta sama klasa błędu co marker
+`ma` wyżej: aplikacja po cichu doliczała sygnały, których fizycznie nie ma.
+
+W realnych zestawieniach (potwierdzone na OFE_381) ten sam punkt pomiarowy
+bywa rozpisany na **dwa wiersze o identycznym oznaczeniu i opisie** —
+raz `lokalny`, raz `zdalny`. Sygnał do sterownika daje wyłącznie `zdalny`;
+`lokalny` to przyrząd czytany wzrokowo na obiekcie (manometr, termometr
+tarczowy). Parser, który tej kolumny nie znał, liczył oba wiersze jednakowo.
+
+**Zmierzone na próbce testowej (14 wierszy = 7 fizycznych punktów):**
+
+| | przed | po | fizycznie |
+|---|---|---|---|
+| AI | 6 | **3** | 3 przepływomierze |
+| DI | 6 | **3** | 3 impulsy |
+| BRAK DANYCH | 8 | **4** | 4 czujniki o niejednoznacznym typie |
+
+Zawyżone AI przekłada się wprost na karty analogowe, złączki PT 4-HESI,
+pobór prądu przetworników, metraż kabla ekranowanego, liczbę zmiennych
+ASIX i sumę kosztorysu — czyli na cenę w ofercie.
+
+Zasady, które zostały zachowane:
+- **Wiersz `lokalny` NIE znika z listy** — wskaźnik bywa w zakresie dostawy
+  AKPiA, więc można go wycenić w sekcji 1a. Znika tylko jego I/O.
+- **Dane jawne wygrywają** — jeśli mimo `lokalny` ktoś wpisał sygnał wprost
+  w kolumnie, sygnał zostaje, a parser zgłasza sprzeczność do weryfikacji.
+- **Nic po cichu** — inżynier dostaje zbiorcze ostrzeżenie, ile pozycji
+  potraktowano jako lokalne i dlaczego.
+- **Obie ścieżki tak samo** — pole `pomiar` dodane też do kontraktu z AI
+  (`core/ai_contract.py`), żeby ekstrakcja AI i parser offline nie rozjechały
+  się na tym samym pliku.
+
+Przy okazji: sygnały rozstrzygnięte ręcznie w sekcji 1b (`source="inzynier"`)
+nie były wcześniej nigdzie zliczane, więc walidator liczył udział sygnałów
+„wywnioskowanych z typu urządzenia" na zaniżonym mianowniku i ostrzegał
+nawet wtedy, gdy inżynier rozstrzygnął wszystko ręcznie. Teraz mają własną
+pozycję w rozkładzie źródeł.
+
+**111 testów, wszystkie przechodzą.**
+
+## Walidacja na komplecie dokumentów wykonawczych DPK2 Wujek
+
+Pierwsza weryfikacja aplikacji nie przeciwko pojedynczemu arkuszowi, lecz
+**czterem dokumentom wykonawczym tego samego projektu**: listą kablową
+(PT.E-05-3-201, 196 kabli), listą materiałów (PT.E-05-3-202), schematem
+technologicznym (PT.E-05-3-401) i rysunkiem konfiguracji sterownika
+(PT.E-05-3-404). Uwaga metodologiczna: to projekt, z którego reguły zostały
+WYPROWADZONE, więc zgodność potwierdza spójność implementacji, a nie
+uniwersalność reguł.
+
+### Co się zgadza
+
+| Pozycja | Aplikacja | Projekt | Błąd |
+|---|---|---|---|
+| Karty DI / DO / AI / AO | 10 / 3 / 7 / 4 | 10 / 3 / 7 / 4 | **0%** |
+| CPU, licencja, interfejs szeregowy, pokrywa | po 1 szt. | po 1 szt. | **0%** |
+| Złączki PT 2,5-PE | 72 | 72 | **0%** |
+| Złączki PT 2,5 | 232 | 235 | −1% |
+| Przekaźniki RIF-1 | 80 | 81 | −1% |
+| Złączki PT 4-HESI | 56 | 64 | −12% |
+
+Dobór kart potwierdzony **dwukrotnie i niezależnie**: przez listę materiałów
+oraz przez policzenie modułów na rysunku listwy (pozycje -A4…-A28).
+
+### Co się nie zgadza — i co z tym zrobiono
+
+**1. Zasilacz magistrali E-bus (EL9410): aplikacja 2 szt., projekt 1 szt.**
+Reguła „co 12 modułów" jest niezwalidowana. Rysunek listwy pokazuje EL9410
+na pozycji -A14 — po 12 terminalach, przy czym **po nim jest jeszcze 14**
+bez drugiego zasilacza. Gdyby limit rzeczywiście wynosił 12 modułów, ten
+drugi odcinek by go wymagał. Fizycznie decyduje **pobór prądu magistrali**
+(CPU zasila ok. 2 A, EL9410 odświeża kolejne ok. 2 A), a karty analogowe
+pobierają około dwukrotnie więcej niż cyfrowe. Dokładny dobór wymaga kolumny
+z poborem E-bus w katalogu kart — do tego czasu zostawiono oszacowanie
+w górę (bezpieczniejsze w ofercie niż brak potrzebnego zasilacza) **plus
+jawne ostrzeżenie**, że to szacunek sprzeczny z projektem referencyjnym.
+
+**2. Domyślna trasa kablowa 25 m nie odpowiada rzeczywistości.**
+Zmierzone średnie na 196 realnych kablach:
+
+| Grupa | Kabli | Metrów | Średnia trasa |
+|---|---|---|---|
+| Analogi (BiT 750®CH 2x1,5) | 40 | 2607 | **65 m** |
+| DI (BiT 750®H 4x1,5) | 20 | 721 | 36 m |
+| DO (BiT 750®H 3G1,5) | 12 | 405 | 34 m |
+| Falowniki (BiTservo) | 6 | 277 | 46 m |
+| Ethernet (ETHERLINE) | 24 | 408 | 17 m |
+
+Trasy różnią się po typie sygnału prawie **dwukrotnie** — najdłuższe są
+analogi (przetworniki stoją w terenie), najkrótszy ethernet (w szafie).
+Jedna wspólna średnia zawyża jedne i zaniża drugie; przy domyślnych 25 m
+najbardziej ucierpiałby metraż kabla ekranowanego, który w tym projekcie
+stanowił blisko połowę całego okablowania sygnałowego. Wartości zapisano
+jako `TRASY_REFERENCYJNE_M` w `core/cables.py` i pokazano inżynierowi
+w podpowiedzi przy suwaku.
+
+**3. Kabel falownikowy ma przekrój zależny od mocy silnika.**
+Aplikacja ma zaszyty jeden (`3G2,5+3G1,5`); w projekcie użyto trzech:
+`3G2,5+3G0,5`, `3G6+3G1,5`, `3G10+3G1,5`. Parser czyta już moc urządzenia
+(`Device.moc_kw`), więc dobór dałoby się zautomatyzować — brakuje tabeli
+moc → przekrój, żeby nie zgadywać.
+
+### Czego aplikacja w ogóle nie modeluje
+
+- **Redundancja zasilania 24 V** — projekt ma 2× NDR-240-24 + moduł
+  redundancji DR-RDN20; aplikacja dobiera jeden zasilacz.
+- **Kable wielożyłowe zbiorcze** — 31 kabli / 1220 m przewodów 6–14-żyłowych
+  konsolidujących sygnały. Aplikacja zakłada jeden kabel na urządzenie.
+- **Osprzęt sieciowy** — projekt wymagał switcha Cisco IE-3100-18T2C-E.
+
+### Rozbieżność w samej dokumentacji projektowej
+
+Rysunek konfiguracji sterownika podaje karty wejść cyfrowych jako **EL1808**,
+a lista materiałów jako **EL1008**. Oba numery istnieją w ofercie Beckhoffa
+(8-kanałowe wejścia cyfrowe). Katalog aplikacji używa EL1008 (zgodnie z listą
+materiałów). Warto ustalić, co faktycznie zamówiono — numer katalogowy jest
+kluczem dopasowania ceny w kosztorysie.

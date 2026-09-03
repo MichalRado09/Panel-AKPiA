@@ -8,6 +8,8 @@ Testy jednostkowe rdzenia deterministycznego. Uruchom: pytest tests/ -v
 import math
 import os
 
+import pytest
+
 from core.signal_rules import classify_digital_phrase, classify_analog_phrase, NO_DATA
 from core.device_rules import infer_signals_from_type
 from core.io_counter import count_io, _apply_reserve, IO_TYPES
@@ -52,6 +54,27 @@ def test_analog_ai_domyslnie():
 def test_analog_nieznany_to_brak_danych():
     r = classify_analog_phrase("jakiś dziwny opis xyz")
     assert _typy(r) == [NO_DATA]
+
+
+def test_analog_jednostka_ma_rozpoznawana_w_roznych_zapisach():
+    """mA/mV jako JEDNOSTKA (z cyfrą przed) musi dawać AI."""
+    for fraza in ("4-20mA", "4-20 mA", "0-20mA", "20 mV", "sygnał 4-20 mA"):
+        assert _typy(classify_analog_phrase(fraza)) == ["AI"], fraza
+
+
+def test_analog_ma_w_srodku_slowa_nie_jest_jednostka():
+    """
+    REGRESJA: marker "ma" był dopasowywany jako DOWOLNY PODCIĄG, więc
+    przypadkowe słowa zawierające "ma" były po cichu klasyfikowane jako AI —
+    zawyżając bilans AI, liczbę kart analogowych i kosztorys. Najgorszy
+    przypadek: "Manometr wskazujący" (lokalny wskaźnik BEZ sygnału do PLC)
+    oraz "Nie ma sygnału", które znaczy dokładnie coś przeciwnego.
+    Zgodnie z zasadą modułu: czego nie rozpoznajemy, tego NIE zgadujemy.
+    """
+    for fraza in ("Automatyczna regulacja", "Sygnał z magistrali",
+                  "Manometr wskazujący", "Informacja z szafy",
+                  "Normalny tryb", "Nie ma sygnału"):
+        assert _typy(classify_analog_phrase(fraza)) == [NO_DATA], fraza
 
 
 # --- device_rules -------------------------------------------------------------
@@ -334,7 +357,7 @@ def test_budget_asix_ceny():
     items = [PlcItem(nr="ASIX-WA512W+1R PM", opis="Stacja 512", ilosc=1, grupa_rabatowa="ASIX")]
     b = calculate_budget(items, rabaty={"ASIX": 10})
     if b.items[0].cena_katalogowa is None:
-        return  # brak realnego cennika w tym środowisku — pomijamy, nie failujemy
+        pytest.skip("brak realnego cennik.csv w tym środowisku (plik jest w .gitignore)")
     assert b.items[0].cena_katalogowa == 9470
     assert b.items[0].wartosc_netto == 8523.00
     assert b.suma_netto == 8523.00
@@ -388,6 +411,28 @@ def test_cabinet_bez_plc_ostrzega():
     bal.base = dict(bal.reserved)
     cab = select_cabinet(bal, None)
     assert any("Brak doboru PLC" in w for w in cab.warnings)
+
+
+def test_cabinet_prad_cpu_liczony_dla_kazdej_platformy():
+    """
+    Regresja: numer katalogowy CPU Siemensa ("6ES7512-1DM03-0AB0") nie
+    zawiera ani "CX", ani "CPU", ani "1512" - poprzednia heurystyka
+    dopasowania tekstowego w select_cabinet() pomijała jego pobór prądu
+    (500 mA), więc bilans prądowy Siemensa był systematycznie zaniżony.
+    CPU jest teraz rozpoznawane po PlcItem.katalog_typ == "CPU", niezależnie
+    od formatu numeru katalogowego.
+    """
+    bal = IOBalance()
+    bal.reserved = {"DI": 8, "DO": 0, "AI": 0, "AO": 0}
+    bal.base = dict(bal.reserved)
+    for platforma in ("Beckhoff CX9020", "Siemens ET200SP"):
+        plc = select_plc(bal, platforma)
+        cpu_items = [it for it in plc.items if it.katalog_typ == "CPU"]
+        assert cpu_items, f"Brak pozycji CPU w doborze {platforma}"
+        cab = select_cabinet(bal, plc)
+        assert cab.prad_karty_ma >= 500, (
+            f"Pobór CPU (500mA) nie trafił do bilansu prądowego dla {platforma}"
+        )
 
 
 # --- scada_asix ---------------------------------------------------------------
@@ -506,30 +551,73 @@ def test_parser_ofe381_puste_kolumny_sygnalow_uzywaja_fallbacku():
     assert bal.source_counts["typ_urzadzenia"] > 0
 
 
-def test_parser_ofe381_lokalny_zdalny_nie_jest_rozrozniany():
+def test_parser_ofe381_pomiar_lokalny_nie_wnosi_sygnalow():
     """
-    ZNANA GRANICA obecnego formatu (decyzja: 'prosty format' z wczesnej fazy
-    projektu): kolumna 'Pomiar? lokalny/zdalny' rozbija każdy czujnik na
-    2 wiersze. 'Lokalny' (wskaźnik na obiekcie, bez transmisji do PLC) i
-    'zdalny' (sygnał AI do sterownika) są liczone JEDNAKOWO — parser prostego
-    formatu nie zna kolumny 'Pomiar?', więc nie potrafi wykluczyć 'lokalny'.
-    Efekt: bilans AI dla tego typu plików może być zawyżony (dublowanie
-    pozycji lokalny+zdalny). W pełnym pliku źródłowym OFE_381 potwierdzono
-    39 par lokalny/zdalny; próbka testowa zawiera 7 par (14 wierszy) —
-    reprezentatywny podzbiór tej samej struktury.
-    Rozwiązanie (poza zakresem obecnego formatu): rozszerzyć parser o obsługę
-    kolumny 'Pomiar?' i pomijać wiersze 'lokalny' przy zliczaniu I/O.
+    REGRESJA (wcześniej udokumentowana ZNANA GRANICA, teraz naprawiona):
+    kolumna 'Pomiar? lokalny/zdalny' rozbija każdy punkt pomiarowy na 2 wiersze
+    o TYM SAMYM oznaczeniu i opisie. Sygnał do PLC daje wyłącznie 'zdalny';
+    'lokalny' to wskaźnik czytany wzrokowo na obiekcie. Parser, który tej
+    kolumny nie znał, liczył oba wiersze jednakowo i DUBLOWAŁ bilans —
+    a przez to karty analogowe, złączki, metraż kabli i kosztorys.
+
+    Zmierzone na tej próbce PRZED poprawką: AI=6, DI=6, BRAK DANYCH=8.
+    Fizycznie jest tam 7 punktów: 3 przepływomierze (AI + impuls DI)
+    i 4 czujniki ciśnienia/temperatury (typ niejednoznaczny -> BRAK DANYCH).
     """
     import pandas as pd
     path = os.path.join(os.path.dirname(__file__), "fixtures", "ofe381_sample.xlsx")
     df = pd.read_excel(path, sheet_name=0)
-    if "Pomiar?" in df.columns:
-        counts = df["Pomiar?"].value_counts(dropna=True)
-        n_lokalny = counts.get("lokalny", 0)
-        n_zdalny = counts.get("zdalny", 0)
-        assert n_lokalny == n_zdalny == 7  # w próbce: 7 par (w pełnym pliku: 39)
-        # Parser prostego formatu NIE rozróżnia tych wierszy — oba wnoszą
-        # sygnał AI wg reguły typu urządzenia, co jest znanym uproszczeniem.
+    counts = df["Pomiar?"].value_counts(dropna=True)
+    assert counts.get("lokalny", 0) == counts.get("zdalny", 0) == 7
+
+    devs, warns = parse_devices(df)
+    bal = count_io(devs, reserve_percent=0)
+
+    # Liczy TYLKO wiersz 'zdalny' z każdej pary — nie podwójnie.
+    assert bal.base["AI"] == 3, f"AI zdublowane: {bal.base}"
+    assert bal.base["DI"] == 3, f"DI zdublowane: {bal.base}"
+    assert len(bal.undecided) == 4, f"BRAK DANYCH zdublowane: {len(bal.undecided)}"
+
+    # Wiersze lokalne ZOSTAJĄ na liście (mogą być w zakresie dostawy AKPiA
+    # i podlegać wycenie w sekcji 1a) - tylko bez sygnałów I/O.
+    assert len(devs) == 14
+    lokalne = [d for d in devs if d.pomiar.strip().lower() == "lokalny"]
+    assert len(lokalne) == 7
+    assert all(d.sygnaly == [] for d in lokalne)
+
+    # Nic nie znika po cichu - inżynier dostaje jawne podsumowanie.
+    assert any("POMIAR LOKALNY" in w for w in warns)
+
+
+def test_pomiar_lokalny_nie_nadpisuje_sygnalu_jawnego():
+    """
+    Dane JAWNE mają pierwszeństwo nad regułą — jeśli mimo 'Pomiar? = lokalny'
+    ktoś wpisał sygnał wprost w kolumnie, sygnał zostaje (a inżynier dostaje
+    ostrzeżenie o sprzeczności). To ta sama zasada, co w całym module:
+    kolumna > reguła typu urządzenia.
+    """
+    import pandas as pd
+    df = pd.DataFrame([{
+        "L.p.": 1, "Urządzenie": "PI_9", "Typ / Opis": "Czujnik ciśnienia",
+        "Ilość": 1, "Pomiar?": "lokalny",
+        "Sygnał Analogowy": "4-20mA", "Sygnał Cyfrowy": "",
+    }])
+    devs, _ = parse_devices(df)
+    assert _typy(devs[0].sygnaly) == ["AI"]
+    assert any("Konflikt danych" in w for w in devs[0].warnings)
+
+
+def test_pomiar_zdalny_i_pusty_zachowuja_sie_jak_dotad():
+    """Tylko rdzeń 'lokaln' wyłącza regułę — 'zdalny' i pusta komórka nie."""
+    import pandas as pd
+    df = pd.DataFrame([
+        {"L.p.": 1, "Urządzenie": "FL_1", "Typ / Opis": "Przepływomierz",
+         "Ilość": 1, "Pomiar?": "zdalny"},
+        {"L.p.": 2, "Urządzenie": "FL_2", "Typ / Opis": "Przepływomierz",
+         "Ilość": 1, "Pomiar?": ""},
+    ])
+    devs, _ = parse_devices(df)
+    assert all(d.sygnaly for d in devs), "reguła typu urządzenia musi nadal działać"
 
 
 # --- validator: walidacja spójności oferty ------------------------------------
@@ -559,6 +647,70 @@ def test_validator_pusta_lista_urzadzen():
     bal.base = dict(bal.reserved)
     report = validate_offer([], bal, None, None, None, None, None)
     assert any("Urządzenia" in i.category for i in report.errors)
+
+
+def test_sygnal_rozstrzygniety_recznie_nie_liczy_sie_jako_wywnioskowany():
+    """
+    Sygnał rozstrzygnięty ręcznie w sekcji 1b ma source="inzynier". Wcześniej
+    ten source nie istniał w source_counts, więc taki sygnał znikał z rozkładu
+    źródeł, a walidator liczył udział "wywnioskowanych z typu urządzenia" na
+    zaniżonym mianowniku — ostrzeżenie nie schodziło, choćby inżynier
+    rozstrzygnął wszystko ręcznie.
+    """
+    from core.parser import Device
+
+    d = Device()
+    d.opis, d.ilosc = "Czujnik", 1
+    d.sygnaly = [
+        {"typ": "AI", "nazwa": "rozstrzygnięty", "source": "inzynier"},
+        {"typ": "DI", "nazwa": "z reguły", "source": "typ_urzadzenia"},
+    ]
+    bal = count_io([d], reserve_percent=0)
+    assert bal.source_counts["inzynier"] == 1
+    assert bal.source_counts["typ_urzadzenia"] == 1
+
+    # 1 z 2 sygnałów wywnioskowany (50%) -> poniżej progu 70%, brak ostrzeżenia
+    report = validate_offer([d], bal, None, None, None, None, None)
+    assert not any("wywnioskowano z typu" in i.message for i in report.warnings)
+
+
+def test_validator_kabel_falownikowy_pokrywa_sygnal_analogowy():
+    """
+    REGRESJA: projekt złożony z samych pomp z falownikiem (bardzo typowy
+    w AKPiA) dostawał FAŁSZYWY czerwony BŁĄD "brak kabla ekranowanego",
+    mimo że na liście kablowej był BiTservo 2XSLCH-J — kabel ekranowany,
+    który właśnie niesie sterowanie AO. Przyczyna: core/cables.py scala
+    urządzenie AO+DO w pozycję "FALOWNIK" (zamiast osobnego wiersza AO),
+    a walidator szukał wyłącznie typów "AI"/"AO".
+    """
+    import pandas as pd
+    from core.plc_selector import select_plc
+    from core.cables import select_cables
+    from core.cabinet import select_cabinet
+    from core.scada_asix import select_asix
+    from core.parser import parse_devices
+
+    df = pd.DataFrame([{
+        "L.p.": 1, "Układ": "RTO", "Urządzenie": "P1",
+        "Typ / Opis": "Pompa obiegowa - napęd inwerterowy", "Ilość": 3,
+    }])
+    devs, _ = parse_devices(df)
+    bal = count_io(devs, reserve_percent=30)
+    assert bal.reserved["AO"] > 0  # falownik faktycznie wnosi sygnał analogowy
+
+    sel = select_plc(bal, "Beckhoff CX9020")
+    cab = select_cables(devs, srednia_trasa_m=25)
+    assert any(it.typ_sygnalu == "FALOWNIK" for it in cab.items)
+    assert not any(it.typ_sygnalu in ("AI", "AO") for it in cab.items)
+
+    report = validate_offer(
+        devs, bal, sel, cab, select_cabinet(bal, sel), select_asix(bal),
+        calculate_budget(sel.items, rabaty={}),
+    )
+    assert not any(i.category == "Kable" for i in report.errors), (
+        "Kabel falownikowy JEST ekranowany — walidator nie może zgłaszać "
+        "braku kabla ekranowanego"
+    )
 
 
 def test_validator_czysty_raport_gdy_wszystko_ok():
@@ -675,7 +827,7 @@ def test_cennik_brak_duplikatow_z_konfliktem_ceny():
     from collections import defaultdict
     path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cennik.csv")
     if not os.path.exists(path):
-        return  # brak realnego cennika w tym środowisku (np. świeże repo) - pomijamy
+        pytest.skip("brak realnego cennik.csv w tym środowisku (plik jest w .gitignore)")
     by_nr = defaultdict(set)
     with open(path, encoding="utf-8") as f:
         for row in csv.DictReader(f, delimiter=";"):
@@ -800,7 +952,7 @@ def test_deduplikacja_na_realnym_pliku_daje_spojny_wynik():
     import pandas as pd
     path = "/mnt/project/Zestawienie_aparatury_i_urządzeń.xlsx"
     if not os.path.exists(path):
-        return  # środowisko bez dostępu do pliku projektowego - pomijamy
+        pytest.skip("brak realnego pliku projektowego (nie jest częścią repo)")
     df = pd.read_excel(path, sheet_name="Sheet1")
     devs, warns = parse_devices(df)
     bal = count_io(devs, reserve_percent=0)
@@ -811,3 +963,41 @@ def test_deduplikacja_na_realnym_pliku_daje_spojny_wynik():
     # vs faktycznie bezimiennych duplikatów zbiorczego licznika.
     assert 48 <= total <= 60, f"Bilans po deduplikacji poza oczekiwanym zakresem: {total}"
     assert any("DEDUPLIKACJA" in w for w in warns)
+
+
+# --- records_to_devices: rekonstrukcja projektu z historii ---------------------
+
+from core.parser import devices_to_records, records_to_devices
+
+
+def test_records_to_devices_roundtrip():
+    """
+    devices_to_records() -> JSON -> records_to_devices() musi odtworzyć te
+    same urządzenia (użyte przy wczytywaniu projektu z historii z powrotem
+    do bieżącej analizy - patrz Historia Projektów w app.py). Przechodzi
+    przez json.dumps/loads, bo dokładnie to dzieje się przy zapisie/odczycie
+    snapshotu na dysku - samo Device(**rec) nie wystarczyłoby przetestować
+    kompatybilności typów po serializacji.
+    """
+    import json
+    import pandas as pd
+
+    df = pd.DataFrame([{
+        "L.p.": 1, "Układ": "RTO", "Urządzenie": "P1",
+        "Typ / Opis": "Pompa obiegowa glikolu", "Ilość": 2,
+        "Sygnał Analogowy": "Zadawanie prędkości (AO)",
+        "Sygnał Cyfrowy": "Start, Praca, Awaria",
+    }])
+    devices, _ = parse_devices(df)
+
+    records = json.loads(json.dumps(devices_to_records(devices), ensure_ascii=False))
+    restored = records_to_devices(records)
+
+    assert len(restored) == len(devices) == 1
+    assert restored[0].oznaczenie == devices[0].oznaczenie == "P1"
+    assert restored[0].ilosc == devices[0].ilosc == 2
+    assert restored[0].sygnaly == devices[0].sygnaly
+    bal_original = count_io(devices, reserve_percent=30)
+    bal_restored = count_io(restored, reserve_percent=30)
+    assert bal_original.base == bal_restored.base
+    assert bal_original.reserved == bal_restored.reserved

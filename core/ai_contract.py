@@ -33,6 +33,7 @@ JSON_SCHEMA_HINT = """
       "analog": "Zadawanie prędkości (AO)",
       "cyfrowy": "Start, Praca, Awaria",
       "komunikacja": "",
+      "pomiar": "",
       "uwagi": ""
     },
     {
@@ -46,6 +47,7 @@ JSON_SCHEMA_HINT = """
       "analog": "",
       "cyfrowy": "",
       "komunikacja": "",
+      "pomiar": "lokalny",
       "uwagi": ""
     }
   ]
@@ -146,6 +148,12 @@ CO EKSTRAHUJESZ - dla każdego urządzenia OBIEKTOWEGO wypełnij pola:
           z myślnikiem "-" jeśli tak jest w źródle (NIE zamieniaj "-" na "").
 - cyfrowy: treść komórki sygnału cyfrowego PRZEPISANA ZNAK W ZNAK, jw.
 - komunikacja: magistrala jeśli podana (np. "Modbus", "Profinet", "M-Bus")
+- pomiar: treść kolumny typu "Pomiar?" PRZEPISANA ZNAK W ZNAK, jeśli plik ją ma
+          (typowe wartości: "lokalny" / "zdalny"). Brak takiej kolumny -> "".
+          NIE wymyślaj tej wartości i NIE wnioskuj jej z opisu urządzenia -
+          program używa jej do rozstrzygnięcia, czy punkt pomiarowy w ogóle
+          wysyła sygnał do sterownika, więc zgadnięta wartość wprost zmienia
+          bilans I/O i kosztorys.
 - uwagi: uwagi ze źródła
 
 JEŚLI OTRZYMASZ DWA ŹRÓDŁA (Excel + PDF): połącz je, NIE licz podwójnie urządzeń
@@ -185,12 +193,17 @@ def build_response_schema() -> dict:
                         "analog": {"type": "string"},
                         "cyfrowy": {"type": "string"},
                         "komunikacja": {"type": "string"},
+                        # "lokalny"/"zdalny" z kolumny "Pomiar?" - rozstrzyga,
+                        # czy punkt pomiarowy wysyła sygnał do PLC (patrz
+                        # core/parser.py::_is_pomiar_lokalny).
+                        "pomiar": {"type": "string"},
                         "uwagi": {"type": "string"},
                     },
                     "required": ["opis", "ilosc", "analog", "cyfrowy"],
                     "propertyOrdering": [
                         "lp", "uklad", "oznaczenie", "opis", "ilosc", "moc_kw",
-                        "napiecie", "analog", "cyfrowy", "komunikacja", "uwagi",
+                        "napiecie", "analog", "cyfrowy", "komunikacja", "pomiar",
+                        "uwagi",
                     ],
                 },
             }

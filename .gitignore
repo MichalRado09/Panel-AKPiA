@@ -20,6 +20,12 @@
 # (te same kolumny, bez wypełnionych cen).
 cennik.csv
 
+# Ostatnio użyte ustawienia (rabaty firmowe, platforma...) i podpowiedzi
+# nauczone z ręcznych decyzji inżyniera - mogą odzwierciedlać rzeczywiste
+# rabaty firmy i nazewnictwo z realnych projektów, tak jak cennik.csv.
+ustawienia_sesji.json
+nauczone_decyzje_sygnalow.json
+
 # --- DANE KLIENTÓW / PROJEKTÓW (historia analiz, wygenerowane oferty) ---
 # Snapshoty JSON i wygenerowane pliki mogą zawierać nazwy klientów,
 # parametry ich instalacji, wyceny — nie powinny trafiać do publicznego repo.

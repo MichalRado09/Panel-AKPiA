@@ -87,8 +87,16 @@ def validate_offer(
 def _check_io_vs_cables(balance, cable_sel, report: ValidationReport):
     """Czy są sygnały AI/AO, ale brak kabla ekranowanego (typowy błąd danych)."""
     has_analog = balance.reserved.get("AI", 0) > 0 or balance.reserved.get("AO", 0) > 0
+    # FALOWNIK liczy się jako pokrycie sygnału analogowego: core/cables.py
+    # świadomie SCALA urządzenie z AO+DO (pompa z falownikiem) w jedną pozycję
+    # "FALOWNIK", zamiast wystawiać osobny wiersz AO - a dobrany tam kabel
+    # (BiTservo 2XSLCH-J) JEST ekranowany i to on niesie sterowanie AO.
+    # Bez tego wyjątku projekt złożony z samych pomp z falownikiem (bardzo
+    # typowy w AKPiA) dostawał czerwony BŁĄD "brak kabla ekranowanego",
+    # mimo że kabel ekranowany był na liście.
     has_analog_cable = any(
-        it.typ_sygnalu in ("AI", "AO") for it in (cable_sel.items if cable_sel else [])
+        it.typ_sygnalu in ("AI", "AO", "FALOWNIK")
+        for it in (cable_sel.items if cable_sel else [])
     )
     if has_analog and not has_analog_cable:
         _add(report, Severity.ERROR,
@@ -155,7 +163,11 @@ def _check_inferred_signals_ratio(balance, report: ValidationReport):
     """Jeśli >70% sygnałów pochodzi z reguły typu (nie z jawnych danych) — ostrzeżenie."""
     kolumna = balance.source_counts.get("kolumna", 0)
     typ = balance.source_counts.get("typ_urzadzenia", 0)
-    total = kolumna + typ
+    # Sygnały rozstrzygnięte ręcznie przez inżyniera (sekcja 1b) są decyzją
+    # człowieka, więc liczą się do mianownika, ale NIE jako "wywnioskowane" -
+    # inaczej ostrzeżenie nie schodziło, choćby inżynier rozstrzygnął wszystko.
+    inzynier = balance.source_counts.get("inzynier", 0)
+    total = kolumna + typ + inzynier
     if total > 0 and typ / total > 0.7:
         _add(report, Severity.WARNING,
              f"{typ}/{total} sygnałów ({typ/total:.0%}) wywnioskowano z typu "
