@@ -419,3 +419,81 @@ nawet wtedy, gdy inżynier rozstrzygnął wszystko ręcznie. Teraz mają własn�
 pozycję w rozkładzie źródeł.
 
 **111 testów, wszystkie przechodzą.**
+
+## Walidacja na komplecie dokumentów wykonawczych DPK2 Wujek
+
+Pierwsza weryfikacja aplikacji nie przeciwko pojedynczemu arkuszowi, lecz
+**czterem dokumentom wykonawczym tego samego projektu**: listą kablową
+(PT.E-05-3-201, 196 kabli), listą materiałów (PT.E-05-3-202), schematem
+technologicznym (PT.E-05-3-401) i rysunkiem konfiguracji sterownika
+(PT.E-05-3-404). Uwaga metodologiczna: to projekt, z którego reguły zostały
+WYPROWADZONE, więc zgodność potwierdza spójność implementacji, a nie
+uniwersalność reguł.
+
+### Co się zgadza
+
+| Pozycja | Aplikacja | Projekt | Błąd |
+|---|---|---|---|
+| Karty DI / DO / AI / AO | 10 / 3 / 7 / 4 | 10 / 3 / 7 / 4 | **0%** |
+| CPU, licencja, interfejs szeregowy, pokrywa | po 1 szt. | po 1 szt. | **0%** |
+| Złączki PT 2,5-PE | 72 | 72 | **0%** |
+| Złączki PT 2,5 | 232 | 235 | −1% |
+| Przekaźniki RIF-1 | 80 | 81 | −1% |
+| Złączki PT 4-HESI | 56 | 64 | −12% |
+
+Dobór kart potwierdzony **dwukrotnie i niezależnie**: przez listę materiałów
+oraz przez policzenie modułów na rysunku listwy (pozycje -A4…-A28).
+
+### Co się nie zgadza — i co z tym zrobiono
+
+**1. Zasilacz magistrali E-bus (EL9410): aplikacja 2 szt., projekt 1 szt.**
+Reguła „co 12 modułów" jest niezwalidowana. Rysunek listwy pokazuje EL9410
+na pozycji -A14 — po 12 terminalach, przy czym **po nim jest jeszcze 14**
+bez drugiego zasilacza. Gdyby limit rzeczywiście wynosił 12 modułów, ten
+drugi odcinek by go wymagał. Fizycznie decyduje **pobór prądu magistrali**
+(CPU zasila ok. 2 A, EL9410 odświeża kolejne ok. 2 A), a karty analogowe
+pobierają około dwukrotnie więcej niż cyfrowe. Dokładny dobór wymaga kolumny
+z poborem E-bus w katalogu kart — do tego czasu zostawiono oszacowanie
+w górę (bezpieczniejsze w ofercie niż brak potrzebnego zasilacza) **plus
+jawne ostrzeżenie**, że to szacunek sprzeczny z projektem referencyjnym.
+
+**2. Domyślna trasa kablowa 25 m nie odpowiada rzeczywistości.**
+Zmierzone średnie na 196 realnych kablach:
+
+| Grupa | Kabli | Metrów | Średnia trasa |
+|---|---|---|---|
+| Analogi (BiT 750®CH 2x1,5) | 40 | 2607 | **65 m** |
+| DI (BiT 750®H 4x1,5) | 20 | 721 | 36 m |
+| DO (BiT 750®H 3G1,5) | 12 | 405 | 34 m |
+| Falowniki (BiTservo) | 6 | 277 | 46 m |
+| Ethernet (ETHERLINE) | 24 | 408 | 17 m |
+
+Trasy różnią się po typie sygnału prawie **dwukrotnie** — najdłuższe są
+analogi (przetworniki stoją w terenie), najkrótszy ethernet (w szafie).
+Jedna wspólna średnia zawyża jedne i zaniża drugie; przy domyślnych 25 m
+najbardziej ucierpiałby metraż kabla ekranowanego, który w tym projekcie
+stanowił blisko połowę całego okablowania sygnałowego. Wartości zapisano
+jako `TRASY_REFERENCYJNE_M` w `core/cables.py` i pokazano inżynierowi
+w podpowiedzi przy suwaku.
+
+**3. Kabel falownikowy ma przekrój zależny od mocy silnika.**
+Aplikacja ma zaszyty jeden (`3G2,5+3G1,5`); w projekcie użyto trzech:
+`3G2,5+3G0,5`, `3G6+3G1,5`, `3G10+3G1,5`. Parser czyta już moc urządzenia
+(`Device.moc_kw`), więc dobór dałoby się zautomatyzować — brakuje tabeli
+moc → przekrój, żeby nie zgadywać.
+
+### Czego aplikacja w ogóle nie modeluje
+
+- **Redundancja zasilania 24 V** — projekt ma 2× NDR-240-24 + moduł
+  redundancji DR-RDN20; aplikacja dobiera jeden zasilacz.
+- **Kable wielożyłowe zbiorcze** — 31 kabli / 1220 m przewodów 6–14-żyłowych
+  konsolidujących sygnały. Aplikacja zakłada jeden kabel na urządzenie.
+- **Osprzęt sieciowy** — projekt wymagał switcha Cisco IE-3100-18T2C-E.
+
+### Rozbieżność w samej dokumentacji projektowej
+
+Rysunek konfiguracji sterownika podaje karty wejść cyfrowych jako **EL1808**,
+a lista materiałów jako **EL1008**. Oba numery istnieją w ofercie Beckhoffa
+(8-kanałowe wejścia cyfrowe). Katalog aplikacji używa EL1008 (zgodnie z listą
+materiałów). Warto ustalić, co faktycznie zamówiono — numer katalogowy jest
+kluczem dopasowania ceny w kosztorysie.

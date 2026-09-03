@@ -23,6 +23,26 @@ from dataclasses import dataclass, field
 # Naddatek montażowy (15% na podejścia i zarobienie w szafie)
 NADDATEK_MONTAZOWY = 1.15
 
+# Realne średnie długości tras, ZMIERZONE na liście kablowej DPK2 Wujek
+# (PT.E-05-3-201, 196 kabli). To NIE są wartości używane w obliczeniach -
+# aplikacja liczy z jednej średniej podanej suwakiem przez inżyniera.
+# Są tu, bo pokazują dwie rzeczy, o których warto wiedzieć przy ustawianiu
+# tego suwaka:
+#   1) domyślne 25 m jest realistyczne tylko dla ethernetu w szafie,
+#   2) trasy RÓŻNIĄ SIĘ po typie sygnału prawie dwukrotnie - najdłuższe są
+#      analogi (przetworniki stoją w terenie), najkrótsze sieć.
+# Ustawienie jednej średniej dla wszystkich typów zawyża jedne, a zaniża
+# drugie; przy 25 m najbardziej ucierpi metraż kabla ekranowanego, który
+# w tym projekcie stanowił blisko połowę całego okablowania sygnałowego.
+TRASY_REFERENCYJNE_M = {
+    "AI": 65,        # 40 kabli BiT 750®CH 2x1,5 -> 2607 m
+    "AO": 65,        # ten sam typ kabla co AI
+    "DI": 36,        # 20 kabli BiT 750®H 4x1,5 -> 721 m
+    "DO": 34,        # 12 kabli BiT 750®H 3G1,5 -> 405 m
+    "FALOWNIK": 46,  # 6 kabli BiTservo -> 277 m
+    "ETHERNET": 17,  # 24 kable ETHERLINE -> 408 m
+}
+
 # Reguły przypisania kabli do typów sygnałów (z realnych projektów)
 # Inżynier może je nadpisać w panelu — to są rozsądne domyślne.
 DOMYSLNE_KABLE = {
@@ -54,7 +74,12 @@ DOMYSLNE_KABLE = {
         "typ": "BiTservo®3plus 2XSLCH-J 3G2,5+3G1,5",
         "opis": "Kabel silnikowy do falownika (zasilanie + sterowanie)",
         "zyl": 6,
-        "uwaga": "Specjalny kabel servo/falownikowy z ekranem",
+        # UWAGA: przekrój dobiera się do MOCY silnika, a tu jest zaszyty na
+        # sztywno jeden. W DPK2 Wujek użyto trzech różnych: 3G2,5+3G0,5,
+        # 3G6+3G1,5 oraz 3G10+3G1,5. Parser czyta moc urządzenia (Device.moc_kw),
+        # więc dobór przekroju dałoby się zautomatyzować - wymaga jednak
+        # tabeli moc -> przekrój od inżyniera, żeby nie zgadywać.
+        "uwaga": "Specjalny kabel servo/falownikowy z ekranem (przekrój wg mocy - do weryfikacji)",
     },
     "ETHERNET": {
         "typ": "ETHERLINE LAN Cat.7 S/FTP",

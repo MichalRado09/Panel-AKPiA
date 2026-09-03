@@ -80,3 +80,22 @@ def test_pomija_platforme_z_brakujacym_katalogiem_zamiast_wywalic_cale_porownani
     platformy_w_wyniku = {v.platforma for v in variants}
     assert platformy_w_wyniku == set(PLATFORMY.keys())
     assert "Platforma Widmo Bez Katalogu" not in platformy_w_wyniku
+
+
+def test_ostrzezenie_o_zasilaczu_ebus_dla_duzej_listwy():
+    """
+    Reguła "zasilacz E-bus co 12 modułów" jest NIEZWALIDOWANA i zawyża:
+    na projekcie referencyjnym DPK2 Wujek (rysunek PT.E-05-3-404) listwa ma
+    26 terminali i DOKŁADNIE JEDEN EL9410, a reguła daje 2. Dopóki dobór nie
+    liczy realnego poboru prądu magistrali, aplikacja MUSI o tym mówić wprost,
+    zamiast podawać liczbę jak pewnik.
+    """
+    from core.plc_selector import select_plc
+
+    bal = _bal(di=80, do=24, ai=56, ao=16)   # realne I/O Wujka
+    sel = select_plc(bal, "Beckhoff CX9020")
+    psu = [it for it in sel.items if it.katalog_typ == "BUSPSU"]
+    assert psu, "dla tej wielkości listwy zasilacz E-bus powinien się pojawić"
+    assert any("SZACUNEK" in w for w in sel.warnings), (
+        "dobór zasilacza E-bus musi być oznaczony jako szacunek do weryfikacji"
+    )

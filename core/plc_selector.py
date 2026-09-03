@@ -181,6 +181,24 @@ def _add_platform_extras(sel: PlcSelection, catalog: dict) -> None:
             c = catalog["BUSPSU"]
             sel.items.append(PlcItem(c["nr"], c["opis"], n_psu, typ="montaz",
                                      grupa_rabatowa=c["grupa_rabatowa"], katalog_typ="BUSPSU"))
+            # UWAGA - ta reguła jest NIEZWALIDOWANA i wiemy, że bywa zawyżona.
+            # Sprawdzone na projekcie referencyjnym DPK2 Wujek (rysunek
+            # PT.E-05-3-404): listwa ma 26 terminali E-bus i DOKŁADNIE JEDEN
+            # EL9410 (pozycja -A14, po 12 terminalach, a po nim jeszcze 14).
+            # Reguła "co 12 modułów" dawałaby tam 2 sztuki.
+            # Fizycznie o liczbie zasilaczy decyduje nie liczba modułów, tylko
+            # POBÓR PRĄDU E-bus: CPU zasila magistralę do ok. 2 A, a EL9410
+            # odświeża kolejne ok. 2 A - a każdy typ karty pobiera inaczej
+            # (karty analogowe ok. dwukrotnie więcej niż cyfrowe). Dokładny
+            # dobór wymaga kolumny z poborem E-bus w katalogu kart; do czasu
+            # jej uzupełnienia zostawiamy oszacowanie w GÓRĘ (bezpieczniejsze
+            # w ofercie niż pominięcie potrzebnego zasilacza) + to ostrzeżenie.
+            sel.warnings.append(
+                f"Zasilacz magistrali E-bus ({c['nr']}): {n_psu} szt. to SZACUNEK "
+                f"wg reguły 'co 12 modułów', nie wynik bilansu prądowego magistrali. "
+                f"Na projekcie referencyjnym (DPK2 Wujek, 26 terminali) ta reguła "
+                f"zawyżała o 1 szt. - zweryfikuj przy tej konfiguracji."
+            )
     if "ENDCAP" in catalog:
         c = catalog["ENDCAP"]
         sel.items.append(PlcItem(c["nr"], c["opis"], 1, typ="montaz",

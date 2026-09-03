@@ -679,7 +679,13 @@ def render_sidebar():
     reserve_percent = st.sidebar.slider(
         "Rezerwa sprzętowa [%]", 0, 100, _clamp(last.get("reserve_percent"), 0, 100, 30), 5)
     cable_length = st.sidebar.slider(
-        "Średnia trasa kablowa [m]", 5, 200, _clamp(last.get("cable_length"), 5, 200, 25), 5)
+        "Średnia trasa kablowa [m]", 5, 200, _clamp(last.get("cable_length"), 5, 200, 25), 5,
+        help="Jedna średnia dla wszystkich typów sygnału. Zmierzone na realnej "
+             "liście kablowej DPK2 Wujek (196 kabli): analogi ~65 m, DI ~36 m, "
+             "DO ~34 m, falowniki ~46 m, ethernet ~17 m. Trasy różnią się po "
+             "typie prawie dwukrotnie — najdłuższe są analogi, bo przetworniki "
+             "stoją w terenie. Ustaw wartość bliską temu, co dominuje w Twoim "
+             "projekcie; 25 m odpowiada właściwie tylko sieci w szafie.")
     asix_factor = st.sidebar.slider(
         "Współczynnik zmiennych ASIX", 1.0, 2.0, _clamp(last.get("asix_factor"), 1.0, 2.0, 1.2), 0.1)
 
