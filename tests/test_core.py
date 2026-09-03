@@ -8,6 +8,8 @@ Testy jednostkowe rdzenia deterministycznego. Uruchom: pytest tests/ -v
 import math
 import os
 
+import pytest
+
 from core.signal_rules import classify_digital_phrase, classify_analog_phrase, NO_DATA
 from core.device_rules import infer_signals_from_type
 from core.io_counter import count_io, _apply_reserve, IO_TYPES
@@ -355,7 +357,7 @@ def test_budget_asix_ceny():
     items = [PlcItem(nr="ASIX-WA512W+1R PM", opis="Stacja 512", ilosc=1, grupa_rabatowa="ASIX")]
     b = calculate_budget(items, rabaty={"ASIX": 10})
     if b.items[0].cena_katalogowa is None:
-        return  # brak realnego cennika w tym środowisku — pomijamy, nie failujemy
+        pytest.skip("brak realnego cennik.csv w tym środowisku (plik jest w .gitignore)")
     assert b.items[0].cena_katalogowa == 9470
     assert b.items[0].wartosc_netto == 8523.00
     assert b.suma_netto == 8523.00
@@ -825,7 +827,7 @@ def test_cennik_brak_duplikatow_z_konfliktem_ceny():
     from collections import defaultdict
     path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cennik.csv")
     if not os.path.exists(path):
-        return  # brak realnego cennika w tym środowisku (np. świeże repo) - pomijamy
+        pytest.skip("brak realnego cennik.csv w tym środowisku (plik jest w .gitignore)")
     by_nr = defaultdict(set)
     with open(path, encoding="utf-8") as f:
         for row in csv.DictReader(f, delimiter=";"):
@@ -950,7 +952,7 @@ def test_deduplikacja_na_realnym_pliku_daje_spojny_wynik():
     import pandas as pd
     path = "/mnt/project/Zestawienie_aparatury_i_urządzeń.xlsx"
     if not os.path.exists(path):
-        return  # środowisko bez dostępu do pliku projektowego - pomijamy
+        pytest.skip("brak realnego pliku projektowego (nie jest częścią repo)")
     df = pd.read_excel(path, sheet_name="Sheet1")
     devs, warns = parse_devices(df)
     bal = count_io(devs, reserve_percent=0)
