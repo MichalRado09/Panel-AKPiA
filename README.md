@@ -33,13 +33,17 @@ pozycje z drugiej kolumny — nic nie jest podawane jako pewnik bez pokrycia.
 
 | Obszar | Status | Podstawa |
 |---|---|---|
-| Dobór sterownika (karty, CPU, zasilacz E-bus) | **zwalidowany co do sztuki** | Cała listwa DPK2 Wujek, potwierdzona niezależnie listą materiałów i rysunkiem konfiguracji |
-| Zliczanie I/O, rezerwa, klasyfikacja sygnałów | **reguły jawne, testowane** | 113 testów jednostkowych |
+| Dobór sterownika — Beckhoff CX9020, Siemens ET200SP | **zwalidowany co do sztuki** | Cała listwa DPK2 Wujek, potwierdzona niezależnie listą materiałów i rysunkiem konfiguracji; ET200SP na projekcie Malbork |
+| Zliczanie I/O, rezerwa, klasyfikacja sygnałów | **reguły jawne, testowane** | 148 testów jednostkowych |
+| Dobór sterownika — Siemens S7-1500 | ⚠ typowa konfiguracja | Bez projektu referencyjnego. Dobór **sam dokłada o tym uwagę** przy każdym użyciu tej platformy |
 | Wyposażenie szafy (złączki, przekaźniki) | ⚠ oszacowanie | Reguły z jednego projektu; na drugim błąd 7–33% |
+| Rozdzielnica (obudowa, korytka, okablowanie, zabezpieczenia) | ⚠ oszacowanie | Z sumy szerokości aparatów na szynie TH35. Bez walidacji na projekcie — rozmiar obudowy zatwierdza projektant |
 | Zestawienie kablowe (metraż) | ⚠ oszacowanie | Jedna średnia trasa dla wszystkich typów, choć realnie różnią się dwukrotnie |
-| Licencja SCADA (współczynnik ×1,2) | ⚠ do potwierdzenia | Reguła uproszczona, nie potwierdzona projektem |
+| Licencja SCADA — próg licencyjny (limit zmiennych) | ⚠ do potwierdzenia | Współczynnik ×1,2 to reguła uproszczona, nie potwierdzona projektem |
+| Licencja SCADA — architektura | wybór inżyniera | Stacja/serwer, redundancja, terminale, dostęp zdalny (RDS/WWW). Skład licencji zdalnych i redundancji **do potwierdzenia u ASKOM** — aplikacja mówi to wprost |
+| Branża urządzenia (AKPiA / poza AKPiA) | podpowiedź | Tylko filtruje listę wyboru w sekcji 1a. **Nie zmienia bilansu I/O ani doboru** |
 | HMI, platforma S7-1200 | wybór ręczny | Świadomie bez automatu — brak zwalidowanego wzorca |
-| Kosztorys | zależy od `cennik.csv` | Pozycje bez ceny pokazują „BRAK CENY" |
+| Kosztorys | zależy od `cennik.csv` | Pozycje bez ceny pokazują „BRAK CENY"; cenę urządzeń obiektowych wpisujesz ręcznie w sekcji 1a albo 9a |
 
 ## Zasady zaszyte w kodzie (audytowalne)
 
@@ -50,6 +54,12 @@ pozycje z drugiej kolumny — nic nie jest podawane jako pewnik bez pokrycia.
    liczony osobno, NIE wchodzi do DI/DO/AI/AO.
 3. **Rezerwa zawsze w górę:** `ceil(baza * (1 + r/100))`, osobno na typ.
 4. **Kolumny mapowane po nazwie** — odporność na przesunięcia i różnice nagłówków.
+5. **Inżynier może wejść w każdą decyzję.** Gdy parser nie umie czegoś rozstrzygnąć,
+   aplikacja nie zgaduje — ale też nie zostawia bez wyjścia: sygnał `BRAK DANYCH`
+   rozstrzygasz w sekcji 1b, brakujące urządzenie dopisujesz formularzem w sekcji 1
+   (sygnały dostają wtedy `source="inzynier"`), architekturę SCADA wybierasz sam
+   w sekcji 5, a cenę wpisujesz wprost w tabeli kosztorysu. Nic z tego nie wymaga
+   wracania do źródłowego Excela i powtarzania analizy od zera.
 
 ---
 
