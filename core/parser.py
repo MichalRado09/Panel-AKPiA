@@ -651,6 +651,102 @@ def parse_ai_devices(records: list[dict]) -> tuple[list[Device], list[str]]:
     return devices, global_warnings
 
 
+# --- Urządzenie dopisane ręcznie przez inżyniera ------------------------------
+
+def urzadzenie_reczne(
+    opis: str,
+    oznaczenie: str = "",
+    ilosc: int = 1,
+    di: int = 0,
+    do: int = 0,
+    ai: int = 0,
+    ao: int = 0,
+    uklad: str = "",
+    wywnioskuj_z_opisu: bool = False,
+) -> Device:
+    """
+    Buduje Device z danych wpisanych RĘCZNIE w panelu.
+
+    PO CO TO ISTNIEJE: parser potrafi dojść do wiersza, o którym umie
+    powiedzieć tylko „Brak sygnałów w kolumnach i nierozpoznany typ
+    urządzenia". To uczciwe (lepsze niż zgadywanie), ale zostawiało inżyniera
+    bez wyjścia: jedyną drogą naprzód była edycja źródłowego Excela i przejście
+    całej analizy od nowa. Tak samo, gdy w zestawieniu brakowało pozycji, którą
+    projektant ma w głowie, a nie w pliku.
+
+    Sygnały podane liczbowo (di/do/ai/ao) dostają source="inzynier" - ta sama
+    etykieta, co przy ręcznym rozstrzyganiu BRAK DANYCH. Dzięki temu w tabeli
+    wyników widać, że nie pochodzą ani z kolumny w pliku, ani z reguły typu
+    urządzenia, a walidator wlicza je do bilansu źródeł.
+
+    wywnioskuj_z_opisu=True dokłada dodatkowo sygnały z reguły typu urządzenia
+    (core/device_rules.py) - wygodne, gdy inżynier dopisuje np. „Pompa
+    z falownikiem" i chce, żeby aplikacja dołożyła standardowy komplet
+    sygnałów zamiast wyklikiwać go liczbami. Reguła jest stosowana TYLKO wtedy,
+    gdy nie podano żadnych sygnałów jawnie - jawne mają pierwszeństwo, dokładnie
+    jak przy czytaniu pliku.
+
+    Zwraca Device gotowe do dołożenia do listy urządzeń.
+    """
+    dev = Device(
+        lp="",
+        uklad=uklad.strip(),
+        oznaczenie=oznaczenie.strip(),
+        opis=opis.strip(),
+        ilosc=max(1, int(ilosc)),
+        ilosc_podana=True,
+    )
+
+    jawne = [
+        ("DI", int(di), "Sygnał cyfrowy wejściowy (dopisany ręcznie)"),
+        ("DO", int(do), "Sygnał cyfrowy wyjściowy (dopisany ręcznie)"),
+        ("AI", int(ai), "Sygnał analogowy wejściowy (dopisany ręcznie)"),
+        ("AO", int(ao), "Sygnał analogowy wyjściowy (dopisany ręcznie)"),
+    ]
+    for typ, n, nazwa in jawne:
+        for i in range(max(0, n)):
+            dev.sygnaly.append({
+                "typ": typ,
+                "nazwa": f"{nazwa} {i + 1}" if n > 1 else nazwa,
+                "source": "inzynier",
+            })
+
+    if dev.sygnaly:
+        dev.warnings.append(
+            "Urządzenie dopisane ręcznie przez inżyniera - sygnały podane wprost, "
+            "nie pochodzą z pliku źródłowego."
+        )
+    elif wywnioskuj_z_opisu:
+        inferred, _pattern = infer_signals_from_type(dev.opis)
+        if inferred:
+            dev.sygnaly.extend(inferred)
+            typy = ", ".join(s["typ"] for s in inferred)
+            dev.warnings.append(
+                f"Urządzenie dopisane ręcznie; sygnały ({typy}) wywnioskowane "
+                f"z opisu regułą typu urządzenia. Do weryfikacji."
+            )
+        else:
+            dev.warnings.append(
+                "Urządzenie dopisane ręcznie - reguła typu urządzenia nie "
+                "rozpoznała opisu, więc pozycja nie wnosi sygnałów I/O. "
+                "Podaj sygnały liczbowo, jeśli je ma."
+            )
+    else:
+        dev.warnings.append(
+            "Urządzenie dopisane ręcznie BEZ sygnałów I/O - nie wpłynie na bilans "
+            "ani na dobór sterownika (może być wycenione w sekcji 1a)."
+        )
+
+    undecided = [s["nazwa"] for s in dev.sygnaly if s["typ"] == NO_DATA]
+    if undecided:
+        dev.warnings.append(
+            f"Nie sklasyfikowano sygnału (DI/DO/AI/AO): {', '.join(undecided)} "
+            f"- wymaga decyzji inżyniera."
+        )
+
+    return dev
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else None

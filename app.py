@@ -16,7 +16,10 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 # --- RDZEŃ DETERMINISTYCZNY (core/) ---
 # Cały dobór i zliczanie dzieje się tutaj, NIE w LLM.
 from core.ai_contract import build_extraction_prompt, parse_ai_json, build_response_schema
-from core.parser import parse_devices, parse_ai_devices, devices_to_records, records_to_devices
+from core.parser import (
+    parse_devices, parse_ai_devices, devices_to_records, records_to_devices,
+    urzadzenie_reczne,
+)
 from core.io_counter import count_io, format_balance, IO_TYPES
 from core.plc_selector import select_plc, format_selection, PLATFORMY
 from core.budget import calculate_budget, format_budget, GRUPY_RABATOWE
@@ -844,10 +847,10 @@ def render_device_table_editor(devices: list) -> list:
         updated.append(dev)
 
     if n_new_ignored:
-        st.warning(
-            f"Zignorowano {n_new_ignored} ręcznie dodany wiersz — dodawanie nowych "
-            "urządzeń w tej tabeli nie jest wspierane (brak opisu = brak reguły "
-            "sygnałów). Dodaj urządzenie w źródłowym pliku i wczytaj ponownie."
+        st.info(
+            f"ℹ Pominięto {n_new_ignored} pusty wiersz dodany w tabeli — nowe "
+            "urządzenia dodaje się formularzem „➕ Dodaj urządzenie ręcznie” pod "
+            "tabelą, bo trzeba przy nich podać sygnały I/O."
         )
     if len(updated) != len(devices):
         st.caption(
@@ -856,6 +859,63 @@ def render_device_table_editor(devices: list) -> list:
         )
 
     return updated
+
+
+def render_manual_device_form(devices: list) -> bool:
+    """
+    Formularz dopisania urządzenia, którego nie ma w pliku źródłowym.
+
+    PO CO: parser bywa w sytuacji, w której umie powiedzieć tylko „Brak
+    sygnałów w kolumnach i nierozpoznany typ urządzenia" — i słusznie, bo
+    zgadywanie byłoby gorsze. Ale dotąd zostawiało to inżyniera bez wyjścia:
+    jedyną drogą naprzód była edycja źródłowego Excela i przejście całej
+    analizy od nowa (upload → parsowanie → ekstrakcja → dobór). Tak samo, gdy
+    w zestawieniu po prostu brakowało pozycji, którą projektant ma w głowie.
+
+    Zwraca True, jeśli urządzenie zostało dodane (wywołujący robi rerun).
+    """
+    with st.expander("➕ Dodaj urządzenie ręcznie", expanded=False):
+        st.caption(
+            "Dla pozycji, których nie ma w pliku, albo takich, przy których parser "
+            "napisał „brak sygnałów w kolumnach”. Sygnały dopisane tutaj są "
+            "oznaczane źródłem „inzynier”, więc widać w tabeli, że nie pochodzą "
+            "z pliku ani z reguły typu urządzenia."
+        )
+        with st.form("form_reczne_urzadzenie", clear_on_submit=True):
+            k1, k2, k3 = st.columns([1, 2, 0.7])
+            oznaczenie = k1.text_input("Oznaczenie projektowe", placeholder="np. PT-105")
+            opis = k2.text_input("Opis / typ urządzenia *",
+                                 placeholder="np. Przetwornik ciśnienia 4-20mA")
+            ilosc = k3.number_input("Ilość", min_value=1, max_value=999, value=1, step=1)
+
+            s1, s2, s3, s4 = st.columns(4)
+            di = s1.number_input("DI", min_value=0, max_value=99, value=0, step=1)
+            do = s2.number_input("DO", min_value=0, max_value=99, value=0, step=1)
+            ai = s3.number_input("AI", min_value=0, max_value=99, value=0, step=1)
+            ao = s4.number_input("AO", min_value=0, max_value=99, value=0, step=1)
+            st.caption("Liczby sygnałów NA JEDNO urządzenie — ilość sztuk mnoży je w bilansie.")
+
+            wywnioskuj = st.checkbox(
+                "Jeśli nie podam sygnałów — wywnioskuj je z opisu",
+                value=True,
+                help="Użyje tej samej reguły typu urządzenia, co przy czytaniu pliku "
+                     "(np. „Pompa z falownikiem” → AO + DO + 2x DI). Sygnały podane "
+                     "liczbowo zawsze mają pierwszeństwo.",
+            )
+            wyslij = st.form_submit_button("Dodaj urządzenie", type="primary")
+
+        if wyslij:
+            if not opis.strip():
+                st.error("Opis jest wymagany — bez niego nie ma jak rozpoznać urządzenia.")
+                return False
+            devices.append(urzadzenie_reczne(
+                opis=opis, oznaczenie=oznaczenie, ilosc=int(ilosc),
+                di=int(di), do=int(do), ai=int(ai), ao=int(ao),
+                wywnioskuj_z_opisu=wywnioskuj,
+            ))
+            st.session_state.devices = devices
+            return True
+    return False
 
 
 def render_undecided_signal_resolver(devices: list) -> None:
@@ -1184,6 +1244,9 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
         st.session_state.devices = updated_devices
         st.rerun()
     devices = updated_devices
+
+    if render_manual_device_form(devices):
+        st.rerun()
 
     render_undecided_signal_resolver(devices)
 

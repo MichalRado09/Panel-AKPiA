@@ -1326,3 +1326,88 @@ def test_records_to_devices_roundtrip():
     bal_restored = count_io(restored, reserve_percent=30)
     assert bal_original.base == bal_restored.base
     assert bal_original.reserved == bal_restored.reserved
+
+
+# --- urzadzenie_reczne: dopisanie pozycji spoza pliku zrodlowego ---------------
+# Uwaga 2 z testów przełożonego: „W uwagach parsera pojawia się zapis - brak
+# sygnałów w kolumnach... W takim przypadku dobrze jak byłaby opcja ręcznego
+# dodawania".
+
+from core.parser import urzadzenie_reczne
+
+
+def test_reczne_sygnaly_jawne_maja_zrodlo_inzynier():
+    """
+    Sygnał dopisany ręcznie musi być odróżnialny od odczytanego z kolumny
+    i od wywnioskowanego z typu urządzenia — inaczej w tabeli wyników nie
+    widać, skąd się wziął.
+    """
+    dev = urzadzenie_reczne("Przetwornik ciśnienia", "PT-99", ilosc=2, ai=1)
+    assert [s["typ"] for s in dev.sygnaly] == ["AI"]
+    assert {s["source"] for s in dev.sygnaly} == {"inzynier"}
+    assert dev.ilosc == 2
+    assert dev.ilosc_podana is True
+
+
+def test_reczne_sygnaly_wchodza_do_bilansu_z_mnoznikiem_ilosci():
+    """Liczby sygnałów są NA JEDNO urządzenie — bilans mnoży je przez ilość."""
+    dev = urzadzenie_reczne("Zawór regulacyjny", ilosc=3, ai=1, ao=1, di=2)
+    bal = count_io([dev], reserve_percent=0)
+    assert bal.base["AI"] == 3
+    assert bal.base["AO"] == 3
+    assert bal.base["DI"] == 6
+    assert bal.source_counts["inzynier"] == 12
+
+
+def test_reczne_jawne_sygnaly_maja_pierwszenstwo_przed_regula_opisu():
+    """
+    Tak samo jak przy czytaniu pliku: reguła typu urządzenia działa TYLKO
+    wtedy, gdy sygnałów nie podano jawnie.
+    """
+    dev = urzadzenie_reczne("Pompa z falownikiem", ilosc=1, di=1,
+                            wywnioskuj_z_opisu=True)
+    assert [s["typ"] for s in dev.sygnaly] == ["DI"]
+    assert {s["source"] for s in dev.sygnaly} == {"inzynier"}
+
+
+def test_reczne_bez_sygnalow_moze_uzyc_reguly_opisu():
+    dev = urzadzenie_reczne("Pompa z falownikiem", wywnioskuj_z_opisu=True)
+    typy = sorted(s["typ"] for s in dev.sygnaly)
+    assert typy == ["AO", "DI", "DI", "DO"]
+    assert {s["source"] for s in dev.sygnaly} == {"typ_urzadzenia"}
+
+
+def test_reczne_nierozpoznany_opis_nie_zgaduje():
+    """
+    Reguła, która nie rozpoznaje opisu, ma NIE wymyślać sygnałów — ma
+    powiedzieć, że ich nie ma, i poradzić podanie ich liczbowo.
+    """
+    dev = urzadzenie_reczne("Cos zupelnie nieznanego", wywnioskuj_z_opisu=True)
+    assert dev.sygnaly == []
+    assert any("nie rozpoznała opisu" in w for w in dev.warnings)
+
+
+def test_reczne_bez_sygnalow_nie_rusza_bilansu():
+    """
+    Pozycja dopisana bez sygnałów (np. po to, żeby ją wycenić w sekcji 1a)
+    nie może wpływać na dobór sterownika.
+    """
+    dev = urzadzenie_reczne("Skrzynka przyłączeniowa", ilosc=5)
+    bal = count_io([dev], reserve_percent=30)
+    assert sum(bal.base.values()) == 0
+    assert any("BEZ sygnałów I/O" in w for w in dev.warnings)
+
+
+def test_reczne_przezywa_zapis_i_odczyt_snapshotu():
+    """
+    Ręcznie dopisane urządzenie musi przetrwać zapis projektu do historii
+    i wczytanie go z powrotem — inaczej praca inżyniera ginęłaby przy
+    pierwszym zapisie.
+    """
+    import json
+    dev = urzadzenie_reczne("Przetwornik ciśnienia", "PT-99", ilosc=2, ai=1)
+    records = json.loads(json.dumps(devices_to_records([dev]), ensure_ascii=False))
+    restored = records_to_devices(records)
+    assert restored[0].sygnaly == dev.sygnaly
+    assert restored[0].warnings == dev.warnings
+    assert count_io(restored, 0).base == count_io([dev], 0).base
