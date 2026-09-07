@@ -502,7 +502,13 @@ def create_devices_excel(devices, balance, platforma: str, rabaty: dict = None, 
     # Dodaj pozycje ASIX i HMI do kosztorysu
     from core.plc_selector import PlcItem as _PI
     asix_plc_items = [_PI(nr=it.nr_katalogowy, opis=it.nazwa, ilosc=it.ilosc, grupa_rabatowa="ASIX") for it in asix.items]
-    cab_plc_items = [_PI(nr=it.nr_katalogowy, opis=it.nazwa, ilosc=it.ilosc, grupa_rabatowa="APARATURA") for it in cab_sel.items]
+    # Grupa rabatowa Z POZYCJI, nie zaszyta na sztywno: obudowa, korytka i szyny
+    # przychodzą od innego dostawcy niż aparatura na szynę, więc mają własny
+    # rabat (grupa OBUDOWY). Wpisanie tu "APARATURA" dla wszystkiego liczyłoby
+    # obudowę rabatem wynegocjowanym u dostawcy złączek.
+    cab_plc_items = [_PI(nr=it.nr_katalogowy, opis=it.nazwa, ilosc=it.ilosc,
+                         grupa_rabatowa=it.grupa_rabatowa or "APARATURA")
+                     for it in cab_sel.items]
     hmi_sel_xl = build_hmi_selection(hmi_entries or [])
     hmi_plc_items = [_PI(nr=f"HMI-{i}", opis=f"{it.nazwa} ({it.lokalizacja})" if it.lokalizacja else it.nazwa,
                          ilosc=it.ilosc, grupa_rabatowa="APARATURA")
@@ -1198,19 +1204,27 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
         st.caption("Brak dodanych paneli HMI — poprawny stan, jeśli projekt ich nie wymaga.")
 
     st.subheader("7. Szafa sterownicza (+SAKG)")
+    st.caption(
+        "Kompletna rozdzielnica: aparatura na szynie + obudowa, korytka, szyna TH35, "
+        "okablowanie wewnętrzne, zabezpieczenia i wyposażenie obudowy. "
+        "Obudowa dobierana z sumy szerokości aparatów — patrz kolumna „Reguła”."
+    )
     cab_sel = select_cabinet(balance, sel)
     df_cab_items = pd.DataFrame([
-        {"Ilość": it.ilosc, "Nr katalogowy": it.nr_katalogowy,
-         "Nazwa": it.nazwa, "Reguła": it.uwaga}
+        {"Ilość": it.ilosc, "Jedn.": it.jednostka, "Nr katalogowy": it.nr_katalogowy,
+         "Nazwa": it.nazwa, "Grupa rab.": it.grupa_rabatowa, "Reguła": it.uwaga}
         for it in cab_sel.items
     ])
     st.dataframe(df_cab_items, width="stretch")
     pw = st.columns(4)
-    pw[0].metric("Karty PLC", f"{cab_sel.prad_karty_ma} mA")
-    pw[1].metric("Przekaźniki", f"{cab_sel.prad_przekazniki_ma} mA")
-    pw[2].metric("Przetworniki", f"{cab_sel.prad_przetworniki_ma} mA")
-    pw[3].metric("Zasilacz 24V", f"{cab_sel.zasilacz_a} A",
+    pw[0].metric("Zasilacz 24V", f"{cab_sel.zasilacz_a} A",
                  f"bilans {cab_sel.prad_z_zapasem_a} A")
+    pw[1].metric("Zabudowa na szynie", f"{cab_sel.dlugosc_szyn_mm:.0f} mm",
+                 f"{cab_sel.obudowa_rzedow} rzędów")
+    pw[2].metric("Obudowa", cab_sel.obudowa.replace("Obudowa ", ""))
+    pw[3].metric("Pobór 24V DC", f"{cab_sel.prad_total_ma} mA",
+                 f"karty {cab_sel.prad_karty_ma} / przek. {cab_sel.prad_przekazniki_ma} "
+                 f"/ przetw. {cab_sel.prad_przetworniki_ma} mA")
     for w in cab_sel.warnings:
         st.info(f"ℹ {w}")
 

@@ -60,3 +60,28 @@ SCADA;ASKOM;AsRDSCAL;Rozszerzenie terminala RDS o kolejnego Klienta;szt.;4350;PL
 SCADA;ASKOM;As4www+1CAL;Terminal WWW z 1 Klientem pełnym;szt.;4350;PLN;ASIX;Cennik ASIX 03/2026
 SCADA;ASKOM;As4www1CAL-Lite;Terminal WWW +1 Klient Lite;szt.;1640;PLN;ASIX;Cennik ASIX 03/2026
 SCADA;ASKOM;As4www1CAL;Terminal WWW +1 Klient pełny;szt.;3750;PLN;ASIX;Cennik ASIX 03/2026
+SZAFA;;Obudowa wisząca 600x600x250;Obudowa rozdzielnicy z płytą montażową;szt.;;PLN;OBUDOWY;
+SZAFA;;Szyna montażowa TH35;Szyna montażowa TH35 (DIN);m;;PLN;OBUDOWY;
+SZAFA;;Korytko grzebieniowe 40x60;Korytko grzebieniowe (prowadzenie przewodów);m;;PLN;OBUDOWY;
+SZAFA;;Przewód LgY 1,0 mm2;Przewód wewnętrzny LgY 1,0 mm2 (obwody sygnałowe);m;;PLN;KABLE;
+SZAFA;;Przewód LgY 2,5 mm2;Przewód wewnętrzny LgY 2,5 mm2 (obwody 230V i zasilacza);m;;PLN;KABLE;
+SZAFA;;Rozłącznik główny 3P 25A;Rozłącznik główny z napędem drzwiowym;szt.;;PLN;APARATURA;
+SZAFA;;Wyłącznik nadprądowy B10 1P+N;Zabezpieczenie obwodu zasilacza 24V DC;szt.;;PLN;APARATURA;
+SZAFA;;Wyłącznik nadprądowy B10 1P+N (gniazdo/oświetlenie);Zabezpieczenie gniazda serwisowego i oświetlenia szafy;szt.;;PLN;APARATURA;
+SZAFA;;Oświetlenie szafy z wyłącznikiem drzwiowym;Oprawa oświetleniowa szafy z wyłącznikiem drzwiowym;szt.;;PLN;APARATURA;
+SZAFA;;Gniazdo serwisowe 230V;Gniazdo serwisowe 230V na szynę TH35;szt.;;PLN;APARATURA;
+SZAFA;;Obudowa wisząca 800x1200x300;Obudowa rozdzielnicy z płytą montażową;szt.;;PLN;OBUDOWY;
+SZAFA;;Wentylator z filtrem + termostat;Wentylacja wymuszona z termostatem;szt.;;PLN;APARATURA;
+SZAFA;;Obudowa stojąca 1000x2000x400;Obudowa rozdzielnicy z płytą montażową;szt.;;PLN;OBUDOWY;
+SZAFA;;Obudowa wisząca 600x800x250;Obudowa rozdzielnicy z płytą montażową;szt.;;PLN;OBUDOWY;
+SZAFA;;Obudowa wisząca 800x1000x300;Obudowa rozdzielnicy z płytą montażową;szt.;;PLN;OBUDOWY;
+SZAFA;;Obudowa stojąca 800x2000x400;Obudowa rozdzielnicy z płytą montażową;szt.;;PLN;OBUDOWY;
+PLC;Siemens;6ES7513-1AL02-0AB0;CPU 1513-1 PN;szt.;;PLN;SIEMENS;
+PLC;Siemens;6EP1332-4BA00;Zasilacz systemowy PM 1507 24V DC / 3A;szt.;;PLN;SIEMENS;
+PLC;Siemens;6ES7541-1AB00-0AB0;Modul komunikacji szeregowej CM PtP RS422/485 HF;szt.;;PLN;SIEMENS;
+PLC;Siemens;6ES7521-1BL00-0AB0;Modul wejsc binarnych 32x DI 24V DC HF;szt.;;PLN;SIEMENS;
+PLC;Siemens;6ES7522-1BL01-0AB0;Modul wyjsc binarnych 32x DQ 24V DC / 0,5A ST;szt.;;PLN;SIEMENS;
+PLC;Siemens;6ES7531-7KF00-0AB0;Modul wejsc analogowych 8x AI U/I/RTD/TC ST;szt.;;PLN;SIEMENS;
+PLC;Siemens;6ES7532-5HD00-0AB0;Modul wyjsc analogowych 4x AQ U/I ST;szt.;;PLN;SIEMENS;
+PLC;Siemens;6ES7592-1BM00-0XB0;Zlacze czolowe 40-pin, srubowe (do modulu I/O);szt.;;PLN;SIEMENS;
+PLC;Siemens;6ES7590-1AE80-0AA0;Szyna profilowa S7-1500, 482 mm;szt.;;PLN;SIEMENS;

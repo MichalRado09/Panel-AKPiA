@@ -461,6 +461,108 @@ def test_cabinet_zasilacz_wujek():
     assert cab.prad_total_ma > 0
 
 
+def test_cabinet_kompletna_rozdzielnica_ma_obudowe_i_reszte():
+    """
+    Uwaga 5 z testów przełożonego: „lista elementów szafy ogranicza się do
+    złączek, przekaźników, zasilaczy - czy dałoby się dodać obudowę, korytka
+    grzebieniowe, okablowanie, wyłączniki/rozłączniki".
+
+    Bez tych pozycji oferta była zaniżona nie o drobiazg, tylko o SAMĄ OBUDOWĘ.
+    """
+    bal = IOBalance()
+    bal.reserved = {"DI": 80, "DO": 24, "AI": 56, "AO": 16}
+    bal.base = dict(bal.reserved)
+    plc = select_plc(bal, "Beckhoff CX9020")
+    cab = select_cabinet(bal, plc)
+    nazwy = " | ".join(it.nr_katalogowy for it in cab.items)
+
+    assert "Obudowa" in nazwy
+    assert "Korytko grzebieniowe" in nazwy
+    assert "Szyna montażowa TH35" in nazwy
+    assert "Przewód LgY" in nazwy
+    assert "Rozłącznik główny" in nazwy
+    assert "Wyłącznik nadprądowy" in nazwy
+    assert "Gniazdo serwisowe" in nazwy
+    assert cab.obudowa and cab.dlugosc_szyn_mm > 0
+
+
+def test_cabinet_obudowa_rosnie_z_wielkoscia_projektu():
+    """
+    Obudowa ma wynikać z ZABUDOWY (sumy szerokości aparatów), a nie być stała.
+    Mały węzeł i duży węzeł nie mogą dostać tej samej szafy.
+    """
+    def _zabudowa(di, do, ai, ao):
+        bal = IOBalance()
+        bal.reserved = {"DI": di, "DO": do, "AI": ai, "AO": ao}
+        bal.base = dict(bal.reserved)
+        cab = select_cabinet(bal, select_plc(bal, "Beckhoff CX9020"))
+        return cab.dlugosc_szyn_mm, cab.obudowa
+
+    maly_mm, maly_obud = _zabudowa(8, 8, 4, 2)
+    duzy_mm, duzy_obud = _zabudowa(160, 48, 112, 32)
+    assert maly_mm < duzy_mm
+    assert maly_obud != duzy_obud
+
+
+def test_cabinet_obudowa_uwzglednia_moduly_sterownika():
+    """
+    Zabudowa musi rosnąć także od strony sterownika, nie tylko złączek —
+    inaczej szafa z rozbudowaną listwą PLC byłaby dobrana za mała.
+    """
+    bal = IOBalance()
+    bal.reserved = {"DI": 80, "DO": 24, "AI": 56, "AO": 16}
+    bal.base = dict(bal.reserved)
+    plc = select_plc(bal, "Beckhoff CX9020")
+    z_plc = select_cabinet(bal, plc).dlugosc_szyn_mm
+    bez_plc = select_cabinet(bal, None).dlugosc_szyn_mm
+    assert z_plc > bez_plc
+
+
+def test_cabinet_grupy_rabatowe_rozdzielone():
+    """
+    Obudowa i korytka przychodzą od innego dostawcy niż aparatura na szynę,
+    więc muszą mieć własną grupę rabatową - inaczej obudowa byłaby liczona
+    rabatem wynegocjowanym u dostawcy złączek.
+    """
+    from core.budget import GRUPY_RABATOWE
+    bal = IOBalance()
+    bal.reserved = {"DI": 16, "DO": 8, "AI": 8, "AO": 4}
+    bal.base = dict(bal.reserved)
+    cab = select_cabinet(bal, select_plc(bal, "Beckhoff CX9020"))
+    grupy = {it.grupa_rabatowa for it in cab.items}
+    assert "OBUDOWY" in grupy
+    assert grupy <= set(GRUPY_RABATOWE), f"nieznana grupa rabatowa: {grupy}"
+
+
+def test_cabinet_mozna_wylaczyc_rozdzielnice():
+    """
+    Gdy rozdzielnicę wycenia ktoś inny (albo szafa jest już na obiekcie),
+    dobór ma zostawić samą aparaturę - bez obudowy i korytek.
+    """
+    bal = IOBalance()
+    bal.reserved = {"DI": 16, "DO": 8, "AI": 8, "AO": 4}
+    bal.base = dict(bal.reserved)
+    cab = select_cabinet(bal, select_plc(bal, "Beckhoff CX9020"),
+                         pelna_rozdzielnica=False)
+    assert not any("Obudowa" in it.nr_katalogowy for it in cab.items)
+    assert cab.obudowa == ""
+    # ...ale aparatura i zasilacz zostają
+    assert any("PT 2,5" == it.nr_katalogowy for it in cab.items)
+    assert cab.zasilacz_a > 0
+
+
+def test_cabinet_rozdzielnica_zawsze_oznaczona_jako_oszacowanie():
+    """
+    Reguły złączek są zwalidowane na dwóch realnych projektach, reguły obudowy
+    NIE SĄ. Ta różnica musi być widoczna w wyniku - z niego powstaje oferta.
+    """
+    bal = IOBalance()
+    bal.reserved = {"DI": 16, "DO": 8, "AI": 8, "AO": 4}
+    bal.base = dict(bal.reserved)
+    cab = select_cabinet(bal, select_plc(bal, "Beckhoff CX9020"))
+    assert any("OSZACOWANIE" in w for w in cab.warnings)
+
+
 def test_cabinet_bez_plc_ostrzega():
     bal = IOBalance()
     bal.reserved = {"DI": 8, "DO": 0, "AI": 0, "AO": 0}

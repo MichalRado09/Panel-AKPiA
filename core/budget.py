@@ -31,6 +31,8 @@ GRUPY_RABATOWE = {
     "SIEMENS": 0,
     "ASIX": 0,
     "APARATURA": 0,
+    "OBUDOWY": 0,           # obudowa rozdzielnicy, korytka, szyny - inny
+                            # dostawca niż aparatura, więc i inny rabat
     "KABLE": 0,
     "AKPIA_URZADZENIA": 0,  # przetworniki i inne urządzenia obiektowe
                             # wycenione ręcznie przez inżyniera - patrz device_budget.py
