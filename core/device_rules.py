@@ -128,6 +128,56 @@ _DEVICE_PATTERNS: list[tuple[str, list[dict]]] = [
 ]
 
 
+# --- Branża: czy pozycja w ogóle należy do zakresu AKPiA ----------------------
+# Zestawienia obiektowe bywają wspólne dla kilku branż, więc trafiają do nich
+# pozycje elektryczne i budowlane: oprawy oświetleniowe, sygnalizatory, gniazda,
+# korytka. Na liście WYBORU do wyceny AKPiA (sekcja 1a) to jest czysty szum -
+# inżynier przewija przez pozycje, których i tak nigdy nie zaznaczy.
+#
+# CO TA REGUŁA ROBI, A CZEGO NIE:
+# Tylko OZNACZA pozycję i pozwala ją odfiltrować z listy wyboru. NIE usuwa jej
+# z analizy i NIE rusza bilansu I/O ani doboru sterownika - jeżeli taka pozycja
+# ma w pliku wpisane sygnały, dalej się liczą, bo o tym decyduje dokumentacja,
+# a nie słownik nazw. Świadomie zachowawcze: przy wątpliwości zostaje "AKPiA".
+#
+# Lista jest do rozbudowy przez inżyniera - kolejność bez znaczenia, wystarczy
+# jedno dopasowanie.
+BRANZA_AKPIA = "AKPiA"
+BRANZA_POZA = "poza AKPiA"
+
+_POZA_AKPIA_WZORCE = [
+    r"\boprawa\b|\boprawy\b|oswietlen|swietlow|ewakuacyjn|awaryjnego oswietl",
+    r"sygnalizator|syrena\b|lampa ostrzegaw|lampka sygnal",
+    r"gniazdo (wtyczkow|230|400|serwisow|elektryczn)|gniazda wtyczkow",
+    r"lacznik (swiecznikow|jednobieg|schodow)|wylacznik oswietlen",
+    r"korytko|drabinka kablowa|rura oslonow|peszel|puszka (podtynk|instalacyjn|rozgalezn)",
+    r"rozdzielnica oswietlen|tablica oswietlen|rozdzielnia potrzeb wlasnych",
+    r"czujka (dymu|pozarow)|\bsap\b|oddymian|roznicowa klapa dymow",
+    r"kamera|\bcctv\b|monitoring wizyjn",
+    r"glosnik|\bdso\b|dzwiekowy system ostrzegaw",
+    r"grzejnik|grzalka bytow|klimatyzator|klimatyzacja pomieszcz",
+]
+
+
+def branza_urzadzenia(opis: str) -> str:
+    """
+    Czy pozycja należy do zakresu AKPiA, czy do innej branży.
+
+    Zwraca BRANZA_AKPIA albo BRANZA_POZA. Domyślnie BRANZA_AKPIA - regułą
+    odsiewamy tylko to, co rozpoznajemy JAKO OBCE, zamiast wpuszczać do zakresu
+    wyłącznie to, co rozpoznajemy jako swoje. Odwrotne podejście chowałoby
+    przed inżynierem każde urządzenie o nietypowej nazwie, czyli dokładnie te,
+    które najbardziej wymagają jego decyzji.
+    """
+    if not opis:
+        return BRANZA_AKPIA
+    n = _norm(opis)
+    for wzorzec in _POZA_AKPIA_WZORCE:
+        if re.search(wzorzec, n):
+            return BRANZA_POZA
+    return BRANZA_AKPIA
+
+
 def infer_signals_from_type(opis: str) -> tuple[list[dict], str | None]:
     """
     Zwraca (lista_sygnałów, dopasowany_wzorzec) na podstawie opisu urządzenia.

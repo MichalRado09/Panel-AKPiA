@@ -31,6 +31,7 @@ from core.scada_asix import (
 )
 from core.cabinet import select_cabinet
 from core.device_budget import build_device_budget, device_key, GRUPA_RABATOWA
+from core.device_rules import branza_urzadzenia, BRANZA_POZA
 from core.extraction_diff import compare_extractions, ExtractionDiff
 from core.pdf_report import create_pdf_report
 from core.validator import validate_offer, Severity
@@ -1174,7 +1175,14 @@ def render_device_budget_selector(devices, rabaty: dict) -> None:
     cennik.csv nie ma jeszcze dopasowania po oznaczeniu/opisie (typowy stan
     dla urządzeń obiektowych - patrz core/device_budget.py) - bez tego
     jedynym sposobem na wycenę takiej pozycji było ręczne dopisanie wiersza
-    do cennik.csv poza aplikacją.
+    do cennik.csv poza aplikacją. Tę samą cenę da się wpisać w sekcji 9a,
+    w tabeli kosztorysu - oba miejsca piszą do tego samego stanu.
+
+    Kolumna "Branża" i filtr nad tabelą odsiewają pozycje, które trafiają do
+    wspólnych zestawień obiektowych, ale z automatyką nie mają nic wspólnego
+    (oprawy oświetleniowe, sygnalizatory, gniazda, korytka). Na LIŚCIE WYBORU
+    to był czysty szum - inżynier przewijał przez pozycje, których i tak nigdy
+    nie zaznaczy. Filtr niczego nie usuwa z analizy ani z bilansu I/O.
     """
     if "wycena_akpia_keys" not in st.session_state:
         st.session_state.wycena_akpia_keys = set()
@@ -1186,6 +1194,7 @@ def render_device_budget_selector(devices, rabaty: dict) -> None:
         key = device_key(d, i)
         rows.append({
             "Wycena AKPiA": key in st.session_state.wycena_akpia_keys,
+            "Branża": branza_urzadzenia(d.opis),
             "Oznaczenie": d.oznaczenie or "-",
             "Opis": d.opis,
             "Ilość": d.ilosc,
@@ -1194,11 +1203,28 @@ def render_device_budget_selector(devices, rabaty: dict) -> None:
         })
     df_sel = pd.DataFrame(rows)
 
+    n_obce = int((df_sel["Branża"] == BRANZA_POZA).sum()) if not df_sel.empty else 0
+    if n_obce:
+        ukryj = st.checkbox(
+            f"Ukryj {n_obce} pozycji spoza branży automatyki "
+            f"(oprawy, sygnalizatory, gniazda, korytka...)",
+            value=True, key="ukryj_poza_akpia",
+            help="Reguła tylko OZNACZA pozycje — nie usuwa ich z analizy i nie zmienia "
+                 "bilansu I/O. Odznacz, jeśli któraś z nich jednak wchodzi w zakres "
+                 "dostawy AKPiA i chcesz ją wycenić.",
+        )
+        if ukryj:
+            df_sel = df_sel[df_sel["Branża"] != BRANZA_POZA].reset_index(drop=True)
+
     edited = st.data_editor(
         df_sel,
         column_config={
             "Wycena AKPiA": st.column_config.CheckboxColumn(
                 "Wycena AKPiA", help="Zaznacz, jeśli to urządzenie ma trafić do kosztorysu AKPiA"
+            ),
+            "Branża": st.column_config.TextColumn(
+                "Branża", help="Rozpoznane po opisie. „poza AKPiA” = typowa pozycja "
+                               "elektryczna/budowlana, nie automatyka.",
             ),
             "Cena ręczna [PLN]": st.column_config.NumberColumn(
                 "Cena ręczna [PLN]", min_value=0.0, step=1.0,
@@ -1207,21 +1233,34 @@ def render_device_budget_selector(devices, rabaty: dict) -> None:
             ),
             "_key": None,  # ukrywa kolumnę techniczną w UI
         },
-        disabled=["Oznaczenie", "Opis", "Ilość"],
+        disabled=["Branża", "Oznaczenie", "Opis", "Ilość"],
         hide_index=True,
         width="stretch",
         key="device_budget_editor",
     )
 
-    # Synchronizacja stanu na podstawie tego, co inżynier zaznaczył/wpisał w tabeli
-    st.session_state.wycena_akpia_keys = set(
-        edited.loc[edited["Wycena AKPiA"], "_key"]
+    # Synchronizacja stanu na podstawie tego, co inżynier zaznaczył/wpisał.
+    #
+    # SCALANIE, NIE NADPISANIE — i to jest tu istotne. Poprzednia wersja
+    # odbudowywała oba słowniki od zera z całej tabeli, co było poprawne tylko
+    # dopóki tabela pokazywała WSZYSTKIE urządzenia. Po dodaniu filtra branży
+    # (i przy cenie wpisanej w sekcji 9a) takie nadpisanie kasowałoby
+    # zaznaczenia i ceny pozycji, których akurat nie widać na ekranie.
+    # Ruszamy więc wyłącznie klucze obecne w wyświetlonych wierszach.
+    widoczne = set(edited["_key"])
+    zaznaczone = set(edited.loc[edited["Wycena AKPiA"], "_key"])
+    st.session_state.wycena_akpia_keys = (
+        (st.session_state.wycena_akpia_keys - widoczne) | zaznaczone
     )
-    st.session_state.akpia_price_overrides = {
-        row["_key"]: float(row["Cena ręczna [PLN]"])
-        for _, row in edited.iterrows()
-        if pd.notna(row["Cena ręczna [PLN]"])
-    }
+
+    overrides = dict(st.session_state.akpia_price_overrides)
+    for _, row in edited.iterrows():
+        cena = row["Cena ręczna [PLN]"]
+        if pd.notna(cena):
+            overrides[row["_key"]] = float(cena)
+        else:
+            overrides.pop(row["_key"], None)
+    st.session_state.akpia_price_overrides = overrides
 
     dev_budget = build_device_budget(
         devices, st.session_state.wycena_akpia_keys, rabaty=rabaty,

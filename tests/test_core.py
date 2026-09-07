@@ -1411,3 +1411,60 @@ def test_reczne_przezywa_zapis_i_odczyt_snapshotu():
     assert restored[0].sygnaly == dev.sygnaly
     assert restored[0].warnings == dev.warnings
     assert count_io(restored, 0).base == count_io([dev], 0).base
+
+
+# --- branza: odsianie pozycji spoza automatyki z listy wyboru (sekcja 1a) ------
+# Uwaga 3 z testów przełożonego: „Ad. 1a. Urządzenia obiektowe wchodzące
+# w zakres wyceny AKPiA - dodaje oprawy, sygnalizatory i inne nie związane
+# z branżą automatyki".
+
+import pandas as pd
+
+from core.device_rules import branza_urzadzenia, BRANZA_AKPIA, BRANZA_POZA
+
+
+def test_branza_rozpoznaje_pozycje_elektryczne():
+    for opis in ("Oprawa oświetleniowa LED 36W",
+                 "Oprawy oświetlenia ewakuacyjnego",
+                 "Sygnalizator optyczno-akustyczny",
+                 "Gniazdo wtyczkowe 230V",
+                 "Korytko kablowe 100x60",
+                 "Czujka dymu",
+                 "Kamera IP"):
+        assert branza_urzadzenia(opis) == BRANZA_POZA, opis
+
+
+def test_branza_nie_odsiewa_automatyki():
+    for opis in ("Przetwornik ciśnienia",
+                 "Przepływomierz elektromagnetyczny",
+                 "Zawór regulacyjny z siłownikiem",
+                 "Pompa z falownikiem",
+                 "Szafa zasilająco-sterownicza"):
+        assert branza_urzadzenia(opis) == BRANZA_AKPIA, opis
+
+
+def test_branza_przy_watpliwosci_zostawia_akpia():
+    """
+    Reguła odsiewa tylko to, co rozpoznaje JAKO OBCE. Odwrotne podejście
+    (wpuszczać wyłącznie rozpoznaną automatykę) chowałoby przed inżynierem
+    każde urządzenie o nietypowej nazwie - czyli dokładnie te, które
+    najbardziej wymagają jego decyzji.
+    """
+    assert branza_urzadzenia("Urządzenie XYZ-2000 wg specyfikacji") == BRANZA_AKPIA
+    assert branza_urzadzenia("") == BRANZA_AKPIA
+
+
+def test_branza_nie_rusza_bilansu_io():
+    """
+    Oznaczenie branży NIE MOŻE zmieniać bilansu: o tym, czy pozycja generuje
+    I/O, decyduje dokumentacja (kolumny sygnałów), a nie słownik nazw.
+    Sygnalizator sterowany z PLC dalej ma się liczyć jako DO.
+    """
+    df = pd.DataFrame([{
+        "L.p.": 1, "Urządzenie": "SYG-01", "Typ / Opis": "Sygnalizator optyczno-akustyczny",
+        "Ilość": 2, "Sygnał Analogowy": "-", "Sygnał Cyfrowy": "Załącz sygnalizację (DO)",
+    }])
+    devices, _ = parse_devices(df)
+    assert branza_urzadzenia(devices[0].opis) == BRANZA_POZA
+    bal = count_io(devices, reserve_percent=0)
+    assert bal.base["DO"] == 2, "oznaczenie branży nie może wykluczyć sygnału z bilansu"
