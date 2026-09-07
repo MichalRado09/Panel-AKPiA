@@ -497,3 +497,55 @@ a lista materiałów jako **EL1008**. Oba numery istnieją w ofercie Beckhoffa
 (8-kanałowe wejścia cyfrowe). Katalog aplikacji używa EL1008 (zgodnie z listą
 materiałów). Warto ustalić, co faktycznie zamówiono — numer katalogowy jest
 kluczem dopasowania ceny w kosztorysie.
+
+## Domknięcie dwóch rozbieżności z walidacji: zasilacz E-bus i przekrój kabla falownikowego
+
+Obie pozycje, które poprzednia walidacja zostawiła jako „do rozstrzygnięcia
+przez inżyniera", zostały policzone — na typowych wartościach katalogowych,
+ale **zweryfikowane przeciwko realnemu projektowi**, a nie przyjęte na wiarę.
+
+**Zasilacz magistrali E-bus (EL9410): 2 szt. → 1 szt., zgodnie z projektem.**
+Dobór nie liczy już modułów, tylko bilans prądu magistrali: sumuje pobór kart,
+odejmuje to, co daje CPU, deficyt dzieli przez wydajność zasilacza. Pobory
+siedzą w nowych kolumnach `pobor_ebus_ma` / `zasila_ebus_ma` w `katalogi/*.csv`,
+więc zmiana wartości nie wymaga ruszania kodu. Dla Wujka: 2870 mA poboru wobec
+2000 mA z CX9020 → deficyt 870 mA → **1 zasilacz**, dokładnie jak na rysunku
+PT.E-05-3-404.
+
+Po tej zmianie **cała listwa zgadza się co do sztuki**, łącznie z pozycją,
+na której stara reguła się wykładała:
+
+| Pozycja | Aplikacja | Projekt |
+|---|---|---|
+| CX9020-0115 / EL6070-0033 / EL6021 | 1 / 1 / 1 | 1 / 1 / 1 |
+| EL1008 / EL2008 / EL3058 / EL4024 | 10 / 3 / 7 / 4 | 10 / 3 / 7 / 4 |
+| **EL9410** | **1** | **1** |
+| EL9011 | 1 | 1 |
+
+**Przekrój kabla falownikowego dobierany wg mocy silnika.** Zamiast jednego
+przekroju zaszytego na sztywno:
+
+| Moc silnika | Kabel | Podstawa |
+|---|---|---|
+| do 4 kW | `3G2,5+3G0,5` | 2 kable → LT-POB1, POB-01 ↔ 2× falownik 4 kW |
+| do 15 kW | `3G6+3G1,5` | 1 kabel → HT-POB1 ↔ 1× falownik 15 kW |
+| do 30 kW | `3G10+3G1,5` | 3 kable → K.POB-01/02/03 ↔ 3× falownik 30 kW |
+
+Tabela wyprowadzona z zestawienia listy kablowej z listą materiałów — zgadzają
+się i liczby, i odbiorniki. Zestawienie kablowe pokazuje teraz osobne pozycje
+dla każdego przekroju, tak jak realna lista kablowa. Powyżej 30 kW zwracany
+jest największy znany przekrój **bez ekstrapolacji** — dobór kabla silnikowego
+zależy też od długości trasy i sposobu ułożenia.
+
+### Skąd wartości i czego nie udało się zdobyć
+
+Pobory E-bus to **typowe wartości katalogowe**, nie odczyty z kart konkretnych
+egzemplarzy — dobór zawsze dopisuje o tym uwagę. Kart katalogowych Beckhoffa
+nie dało się pobrać: `beckhoff.com` i `download.beckhoff.com` są blokowane
+przez politykę sieciową. Mocnym argumentem za sensownością tych liczb jest to,
+że wstawione w regułę **odtwarzają projekt referencyjny**, na którym stara
+reguła się myliła. Podmiana na wartości z kart katalogowych to edycja dwóch
+kolumn w CSV, bez zmian w kodzie.
+
+**113 testów, wszystkie przechodzą** — w tym test pilnujący zgodności całej
+listwy z projektem oraz test doboru przekroju kabla wg mocy.

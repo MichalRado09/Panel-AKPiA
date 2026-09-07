@@ -34,6 +34,14 @@ NADDATEK_MONTAZOWY = 1.15
 # Ustawienie jednej średniej dla wszystkich typów zawyża jedne, a zaniża
 # drugie; przy 25 m najbardziej ucierpi metraż kabla ekranowanego, który
 # w tym projekcie stanowił blisko połowę całego okablowania sygnałowego.
+# Przekrój kabla falownikowego wg mocy silnika - progi (do X kW, przekrój).
+# Wyprowadzone z DPK2 Wujek, szczegóły w kabel_falownika_dla_mocy().
+PROGI_KABLA_FALOWNIKA = [
+    (4,  "BiTservo®3plus 2XSLCH-J 3G2,5+3G0,5"),
+    (15, "BiTservo®3plus 2XSLCH-J 3G6+3G1,5"),
+    (30, "BiTservo®3plus 2XSLCH-J 3G10+3G1,5"),
+]
+
 TRASY_REFERENCYJNE_M = {
     "AI": 65,        # 40 kabli BiT 750®CH 2x1,5 -> 2607 m
     "AO": 65,        # ten sam typ kabla co AI
@@ -115,23 +123,58 @@ class CableSelection:
         return sum(it.metraz_m for it in self.items)
 
 
+def kabel_falownika_dla_mocy(moc_kw: float | None) -> str:
+    """
+    Przekrój kabla falownikowego dobrany do MOCY silnika.
+
+    Tabela wyprowadzona z projektu DPK2 Wujek przez zestawienie listy kablowej
+    (PT.E-05-3-201) z listą materiałów (PT.E-05-3-202) - dopasowanie jest
+    jednoznaczne, bo zgadzają się zarówno liczby, jak i odbiorniki:
+        2 kable 3G2,5+3G0,5  -> LT-POB1, POB-01       <- 2x falownik 4 kW
+        1 kabel  3G6+3G1,5   -> HT-POB1               <- 1x falownik 15 kW
+        3 kable  3G10+3G1,5  -> K.POB-01/02/03        <- 3x falownik 30 kW
+
+    Progi ustawione na zaobserwowanych mocach. Powyżej największej znanej
+    mocy zwracamy największy znany przekrój - świadomie NIE ekstrapolujemy
+    w górę, bo dobór kabla silnikowego zależy też od długości trasy i sposobu
+    ułożenia; taką pozycję inżynier ma zweryfikować (patrz ostrzeżenie
+    w select_cables).
+
+    Brak podanej mocy -> None-owy przypadek: zwracamy przekrój bazowy,
+    ten sam, który był zaszyty w aplikacji przed wprowadzeniem tabeli.
+    """
+    if moc_kw is None:
+        return DOMYSLNE_KABLE["FALOWNIK"]["typ"]
+    for prog_kw, przekroj in PROGI_KABLA_FALOWNIKA:
+        if moc_kw <= prog_kw:
+            return przekroj
+    return PROGI_KABLA_FALOWNIKA[-1][1]
+
+
 def _count_devices_by_signal(devices: list) -> dict[str, int]:
     """
     Zlicza URZĄDZENIA (nie kanały) per typ sygnału.
     Jeden kabel idzie do jednego urządzenia, niezależnie ile ma kanałów.
     Pompa z AO+DO+2DI = 1 kabel sterowania + 1 kabel falownika, nie 4 osobne.
-    
+
     Uproszczenie: liczymy urządzenia wg dominującego sygnału.
+
+    Falowniki są dodatkowo rozbijane po PRZEKROJU kabla (zależnym od mocy
+    silnika) - klucz "FALOWNIK::<przekrój>". Dzięki temu zestawienie kablowe
+    pokazuje osobne pozycje dla różnych przekrojów, tak jak realna lista
+    kablowa, zamiast wrzucać wszystko do jednego worka.
     """
     counts: dict[str, int] = {"DI": 0, "DO": 0, "AI": 0, "AO": 0, "FALOWNIK": 0}
-    
+
     for dev in devices:
         qty = getattr(dev, "ilosc", 1) or 1
         typy = {s.get("typ") for s in getattr(dev, "sygnaly", [])}
-        
+
         # Urządzenie z AO + DO = falownik (kabel servo + kabel sterowania)
         if "AO" in typy and "DO" in typy:
-            counts["FALOWNIK"] += qty
+            przekroj = kabel_falownika_dla_mocy(getattr(dev, "moc_kw", None))
+            klucz = f"FALOWNIK::{przekroj}"
+            counts[klucz] = counts.get(klucz, 0) + qty
             counts["DI"] += qty   # sygnały zwrotne (praca/awaria) idą kablem sterowniczym
         elif "AO" in typy:
             counts["AO"] += qty
@@ -168,17 +211,27 @@ def select_cables(
             if k in kable:
                 kable[k]["typ"] = v
 
-    for sig_type in ("DI", "DO", "AI", "AO", "FALOWNIK"):
-        n = counts.get(sig_type, 0)
+    # Falowniki mają klucze "FALOWNIK::<przekrój>" (przekrój zależy od mocy
+    # silnika), więc listę pozycji budujemy dynamicznie zamiast ze sztywnej
+    # krotki typów sygnału.
+    klucze_falownikow = sorted(k for k in counts if k.startswith("FALOWNIK::"))
+    for klucz in ("DI", "DO", "AI", "AO", "FALOWNIK", *klucze_falownikow):
+        n = counts.get(klucz, 0)
         if n <= 0:
             continue
-        
-        kabel = kable.get(sig_type)
+
+        if klucz.startswith("FALOWNIK::"):
+            kabel = dict(kable["FALOWNIK"])
+            kabel["typ"] = klucz.split("::", 1)[1]
+            sig_type = "FALOWNIK"
+        else:
+            kabel = kable.get(klucz)
+            sig_type = klucz
         if not kabel:
             continue
-        
+
         metraz = math.ceil(n * srednia_trasa_m * NADDATEK_MONTAZOWY)
-        
+
         sel.items.append(CableItem(
             typ_kabla=kabel["typ"],
             opis=kabel["opis"],

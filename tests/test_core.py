@@ -464,6 +464,48 @@ def test_cables_naddatek():
     assert NADDATEK_MONTAZOWY == 1.15
 
 
+def test_kabel_falownika_dobierany_wg_mocy_silnika():
+    """
+    WALIDACJA NA REALNYM PROJEKCIE (DPK2 Wujek): przekrój kabla falownikowego
+    zależy od mocy silnika. Zestawienie listy kablowej (PT.E-05-3-201) z listą
+    materiałów (PT.E-05-3-202) daje jednoznaczne dopasowanie - zgadzają się
+    i liczby, i odbiorniki:
+        2x falownik 4 kW  -> 2 kable 3G2,5+3G0,5 (LT-POB1, POB-01)
+        1x falownik 15 kW -> 1 kabel  3G6+3G1,5  (HT-POB1)
+        3x falownik 30 kW -> 3 kable  3G10+3G1,5 (K.POB-01/02/03)
+    Wcześniej aplikacja miała jeden przekrój zaszyty na sztywno.
+    """
+    import pandas as pd
+    from core.cables import kabel_falownika_dla_mocy
+    from core.parser import parse_devices
+
+    assert "3G2,5+3G0,5" in kabel_falownika_dla_mocy(4)
+    assert "3G6+3G1,5" in kabel_falownika_dla_mocy(15)
+    assert "3G10+3G1,5" in kabel_falownika_dla_mocy(30)
+    # powyżej największej znanej mocy: największy znany przekrój, bez ekstrapolacji
+    assert "3G10+3G1,5" in kabel_falownika_dla_mocy(45)
+
+    df = pd.DataFrame([
+        {"L.p.": 1, "Urządzenie": "POB-01", "Typ / Opis": "Pompa z falownikiem",
+         "Ilość": 2, "Moc [kW]": 4},
+        {"L.p.": 2, "Urządzenie": "HT-POB1", "Typ / Opis": "Pompa z falownikiem",
+         "Ilość": 1, "Moc [kW]": 15},
+        {"L.p.": 3, "Urządzenie": "K.POB-01", "Typ / Opis": "Pompa z falownikiem",
+         "Ilość": 3, "Moc [kW]": 30},
+    ])
+    devs, _ = parse_devices(df)
+    cab = select_cables(devs, srednia_trasa_m=46)
+    falowniki = {
+        it.typ_kabla: it.ilosc_urzadzen
+        for it in cab.items if it.typ_sygnalu == "FALOWNIK"
+    }
+    assert len(falowniki) == 3, f"oczekiwano 3 różnych przekrojów, jest: {falowniki}"
+    assert sum(falowniki.values()) == 6
+    for przekroj, szt in (("3G2,5+3G0,5", 2), ("3G6+3G1,5", 1), ("3G10+3G1,5", 3)):
+        pasujace = [n for k, n in falowniki.items() if przekroj in k]
+        assert pasujace == [szt], f"{przekroj}: oczekiwano {szt}, jest {pasujace}"
+
+
 def test_cables_metraz():
     devs = [_Dev(4, [{"typ": "AI", "nazwa": "x", "source": "kolumna"}])]
     cab = select_cables(devs, srednia_trasa_m=10)

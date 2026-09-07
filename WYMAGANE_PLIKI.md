@@ -39,7 +39,7 @@ nie ceny, więc bezpieczne do publikacji.
 **Wymagane kolumny (dokładnie te nazwy w nagłówku):**
 
 ```
-typ;nr_katalogowy;opis;kanaly;rola;grupa_rabatowa
+typ;nr_katalogowy;opis;kanaly;rola;grupa_rabatowa;pobor_ebus_ma;zasila_ebus_ma
 ```
 
 | Kolumna | Opis | Przykład |
@@ -50,6 +50,23 @@ typ;nr_katalogowy;opis;kanaly;rola;grupa_rabatowa
 | `kanaly` | Liczba kanałów I/O na karcie (int). **Puste** dla pozycji systemowych/montażowych (CPU, licencja itd.) — tylko `DI`/`DO`/`AI`/`AO` muszą mieć tu liczbę. | `8` |
 | `rola` | Grupa do klasyfikacji w kosztorysie: `io`, `systemowy`, `montaz`. | `io` |
 | `grupa_rabatowa` | Klucz łączący pozycję z suwakiem rabatu w panelu (`BECKHOFF`, `SIEMENS`, `ASIX`, `APARATURA`, `KABLE`). | `BECKHOFF` |
+| `pobor_ebus_ma` | Ile prądu magistrali E-bus **pobiera** ta karta [mA]. Puste = brak danych. | `130` |
+| `zasila_ebus_ma` | Ile prądu magistrali **dostarcza** (CPU i zasilacz E-bus). Puste dla zwykłych kart. | `2000` |
+
+**Po co kolumny E-bus (tylko Beckhoff).** Na ich podstawie liczona jest liczba
+zasilaczy magistrali (EL9410): sumowany jest pobór wszystkich kart, odejmowane
+to, co daje CPU, a deficyt dzielony przez wydajność zasilacza. Wcześniej
+aplikacja używała zgrubnej reguły „co 12 modułów", która na projekcie
+referencyjnym DPK2 Wujek dawała 2 sztuki zamiast rzeczywistej 1.
+
+Wpisane wartości są **typowe katalogowe, nie odczyty z kart konkretnych
+egzemplarzy** — dlatego dobór zawsze dopisuje o tym uwagę. Reguła w tej
+postaci odtwarza całą listwę Wujka co do sztuki. Jeśli te kolumny zostaną
+puste (np. przy dodawaniu nowej platformy), dobór wraca do starej reguły
+po liczbie modułów i wyraźnie zaznacza, że to zgrubny szacunek.
+
+Siemens ET200SP ma te kolumny puste — tam nie ma magistrali E-bus, rolę
+zasilania pełnią BaseUnity i grupy potencjałowe.
 
 **Co się stanie bez tego pliku:** `FileNotFoundError` — aplikacja się wywali
 przy próbie doboru PLC dla tej platformy. To jedyny z plików danych, który

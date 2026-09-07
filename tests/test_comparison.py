@@ -82,20 +82,55 @@ def test_pomija_platforme_z_brakujacym_katalogiem_zamiast_wywalic_cale_porownani
     assert "Platforma Widmo Bez Katalogu" not in platformy_w_wyniku
 
 
-def test_ostrzezenie_o_zasilaczu_ebus_dla_duzej_listwy():
+def test_cala_listwa_odtwarza_projekt_referencyjny_wujek():
     """
-    Reguła "zasilacz E-bus co 12 modułów" jest NIEZWALIDOWANA i zawyża:
-    na projekcie referencyjnym DPK2 Wujek (rysunek PT.E-05-3-404) listwa ma
-    26 terminali i DOKŁADNIE JEDEN EL9410, a reguła daje 2. Dopóki dobór nie
-    liczy realnego poboru prądu magistrali, aplikacja MUSI o tym mówić wprost,
-    zamiast podawać liczbę jak pewnik.
+    WALIDACJA NA REALNYM PROJEKCIE (DPK2 Wujek): dobór musi odtworzyć całą
+    listwę co do sztuki - zweryfikowane niezależnie DWOMA dokumentami
+    wykonawczymi: listą materiałów (PT.E-05-3-202) i rysunkiem konfiguracji
+    sterownika (PT.E-05-3-404, moduły -A1...-A28).
+
+    Kluczowa jest tu pozycja EL9410. Poprzednia reguła "zasilacz E-bus co
+    12 modułów" dawała tu 2 sztuki zamiast 1. Rysunek pokazuje, dlaczego ta
+    premisa była fałszywa: EL9410 stoi na -A14 (po 12 terminalach), ale ZA NIM
+    jest jeszcze 14 kolejnych bez drugiego zasilacza. Dobór liczy teraz bilans
+    prądu magistrali i wychodzi 1 szt., zgodnie z rzeczywistością.
     """
     from core.plc_selector import select_plc
 
-    bal = _bal(di=80, do=24, ai=56, ao=16)   # realne I/O Wujka
+    bal = _bal(di=80, do=24, ai=56, ao=16)   # realne I/O Wujka (10/3/7/4 karty)
     sel = select_plc(bal, "Beckhoff CX9020")
-    psu = [it for it in sel.items if it.katalog_typ == "BUSPSU"]
-    assert psu, "dla tej wielkości listwy zasilacz E-bus powinien się pojawić"
-    assert any("SZACUNEK" in w for w in sel.warnings), (
-        "dobór zasilacza E-bus musi być oznaczony jako szacunek do weryfikacji"
+    dobrane = {it.nr: it.ilosc for it in sel.items}
+
+    listwa_z_projektu = {
+        "CX9020-0115": 1, "EL6070-0033": 1, "EL6021": 1,
+        "EL1008": 10, "EL2008": 3, "EL3058": 7, "EL4024": 4,
+        "EL9410": 1,   # <- pozycja, na której wykładała się stara reguła
+        "EL9011": 1,
+    }
+    assert dobrane == listwa_z_projektu
+
+
+def test_zasilacz_ebus_spada_na_regule_zastepcza_bez_danych_o_poborze():
+    """
+    Gdy w katalogu nie ma poborów E-bus (np. ktoś doda platformę bez tych
+    kolumn), dobór nie może udawać, że policzył bilans prądu - ma wrócić do
+    zgrubnej reguły po liczbie modułów i JAWNIE to zaznaczyć.
+    """
+    import core.plc_selector as plc_selector_module
+    from core.plc_selector import select_plc, load_catalog
+
+    katalog_bez_pradow = {
+        typ: {**dane, "pobor_ebus_ma": None, "zasila_ebus_ma": None}
+        for typ, dane in load_catalog("Beckhoff CX9020").items()
+    }
+    monkey = lambda platforma: katalog_bez_pradow
+    orig = plc_selector_module.load_catalog
+    plc_selector_module.load_catalog = monkey
+    try:
+        sel = select_plc(_bal(di=80, do=24, ai=56, ao=16), "Beckhoff CX9020")
+    finally:
+        plc_selector_module.load_catalog = orig
+
+    assert any("ZGRUBNY SZACUNEK" in w for w in sel.warnings), (
+        "bez danych o poborze dobór musi się przyznać, że to tylko szacunek"
     )
