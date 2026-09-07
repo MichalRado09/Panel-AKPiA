@@ -915,6 +915,110 @@ def render_undecided_signal_resolver(devices: list) -> None:
                 st.rerun()
 
 
+def render_device_budget_table(devices, rabaty: dict):
+    """
+    Kosztorys urządzeń AKPiA (sekcja 9a) — z możliwością wpisania ceny WPROST
+    w tej tabeli.
+
+    DLACZEGO TU, SKORO CENĘ DAŁO SIĘ JUŻ PODAĆ W 1a: bo nikt jej tam nie
+    szukał. Przełożony testujący aplikację napisał wprost „Ad. 9a. Kosztorys
+    urządzeń AKPiA — nie mogę ręcznie uzupełnić cen", mimo że kolumna „Cena
+    ręczna" istniała piętro wyżej, na liście WYBORU urządzeń. Sekcja 9a
+    pokazywała tabelę tylko do odczytu i sama pisała „uzupełnij ręcznie",
+    nie mówiąc gdzie. Funkcja, której nie da się znaleźć tam, gdzie widać
+    problem, nie istnieje.
+
+    Obie tabele piszą do tego samego st.session_state["akpia_price_overrides"],
+    więc cena wpisana w 1a natychmiast widać tutaj i odwrotnie.
+
+    Zwraca DeviceBudgetSelection policzone JUŻ PO uwzględnieniu edycji.
+    """
+    if "akpia_price_overrides" not in st.session_state:
+        st.session_state.akpia_price_overrides = {}
+
+    dev_budget = build_device_budget(
+        devices, st.session_state.get("wycena_akpia_keys", set()), rabaty=rabaty,
+        price_overrides=st.session_state.akpia_price_overrides,
+    )
+    if not dev_budget.items:
+        st.caption("Brak zaznaczonych urządzeń — sekcja 1a pozwala je dodać.")
+        return dev_budget
+
+    overrides = st.session_state.akpia_price_overrides
+    df = pd.DataFrame([
+        {
+            "Oznaczenie": it.oznaczenie,
+            "Opis": it.opis,
+            "Ilość": it.ilosc,
+            "Cena kat. [PLN]": it.cena_katalogowa,
+            "Rabat [%]": it.rabat_pct,
+            "Cena netto/szt. [PLN]": it.cena_netto_jed,
+            "Wartość netto [PLN]": it.wartosc_netto,
+            "_key": it.klucz,
+        }
+        for it in dev_budget.items
+    ])
+
+    edited = st.data_editor(
+        df,
+        column_config={
+            "Cena kat. [PLN]": st.column_config.NumberColumn(
+                "Cena kat. [PLN]", min_value=0.0, step=1.0, format="%.2f",
+                help="Wpisz cenę katalogową za sztukę. Puste = brak ceny "
+                     "(pozycja nie wejdzie do sumy).",
+            ),
+            # Reszta kolumn jest WYLICZANA — edycja netto z pominięciem ceny
+            # katalogowej i rabatu rozjechałaby kosztorys z resztą oferty.
+            "Rabat [%]": st.column_config.NumberColumn("Rabat [%]", format="%.0f"),
+            "Cena netto/szt. [PLN]": st.column_config.NumberColumn(
+                "Cena netto/szt. [PLN]", format="%.2f"),
+            "Wartość netto [PLN]": st.column_config.NumberColumn(
+                "Wartość netto [PLN]", format="%.2f"),
+            "_key": None,
+        },
+        disabled=["Oznaczenie", "Opis", "Ilość", "Rabat [%]",
+                  "Cena netto/szt. [PLN]", "Wartość netto [PLN]"],
+        hide_index=True,
+        width="stretch",
+        key="device_budget_editor",
+    )
+
+    # Zapisz zmienione ceny i przelicz, jeśli cokolwiek się zmieniło.
+    #
+    # Porównujemy z WYŚWIETLONĄ wartością, a nie z zawartością overrides.
+    # Inaczej pozycja wyceniona z cennika (override pusty, w tabeli widać cenę
+    # z cennika) wyglądałaby przy pierwszym renderze na „zmienioną" i zostałaby
+    # przypięta jako cena ręczna — a wtedy późniejsza aktualizacja cennika już
+    # by na tę pozycję nie działała.
+    pokazane = {it.klucz: it.cena_katalogowa for it in dev_budget.items}
+    zmienione = False
+    for _, row in edited.iterrows():
+        key = row["_key"]
+        nowa = row["Cena kat. [PLN]"]
+        nowa = None if pd.isna(nowa) else float(nowa)
+        if nowa == pokazane.get(key):
+            continue
+        if nowa is None:
+            overrides.pop(key, None)   # wyczyszczenie pola = wróć do cennika
+        else:
+            overrides[key] = nowa
+        zmienione = True
+
+    if zmienione:
+        st.rerun()
+
+    sum_cols = st.columns(2)
+    sum_cols[0].metric("Suma katalogowa (AKPiA)", f"{dev_budget.suma_katalogowa:,.2f} PLN")
+    sum_cols[1].metric("Suma netto (AKPiA)", f"{dev_budget.suma_netto:,.2f} PLN")
+    if dev_budget.brak_ceny:
+        st.warning(
+            f"⚠ {len(dev_budget.brak_ceny)} pozycji bez ceny katalogowej — wpisz cenę "
+            f"w kolumnie „Cena kat. [PLN]” w tabeli powyżej. Pozycje bez ceny NIE "
+            f"wchodzą do sumy, więc oferta jest o nie zaniżona."
+        )
+    return dev_budget
+
+
 def get_asix_arch() -> dict:
     """
     Parametry architektury SCADA wybrane przez inżyniera w sekcji 5.
@@ -1267,32 +1371,10 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
 
     st.subheader("9a. Kosztorys urządzeń AKPiA (wybór ręczny)")
     st.caption("Pozycje zaznaczone w sekcji 1a — osobno od sprzętu sterowniczego, "
-               "bo dotyczą urządzeń obiektowych (np. przetworników), a nie kart PLC/szafy/SCADA.")
-    dev_budget = build_device_budget(
-        devices, st.session_state.get("wycena_akpia_keys", set()), rabaty=rabaty,
-        price_overrides=st.session_state.get("akpia_price_overrides", {}),
-    )
-    if dev_budget.items:
-        df_dev_budget = pd.DataFrame([
-            {
-                "Oznaczenie": it.oznaczenie,
-                "Opis": it.opis,
-                "Ilość": it.ilosc,
-                "Cena kat. [PLN]": f"{it.cena_katalogowa:.2f}" if it.cena_katalogowa else "BRAK",
-                "Rabat [%]": f"{it.rabat_pct:.0f}",
-                "Wartość netto [PLN]": f"{it.wartosc_netto:.2f}" if it.wartosc_netto else "-",
-            }
-            for it in dev_budget.items
-        ])
-        st.dataframe(df_dev_budget, width="stretch")
-        sum_cols2 = st.columns(2)
-        sum_cols2[0].metric("Suma katalogowa (AKPiA)", f"{dev_budget.suma_katalogowa:,.2f} PLN")
-        sum_cols2[1].metric("Suma netto (AKPiA)", f"{dev_budget.suma_netto:,.2f} PLN")
-        if dev_budget.brak_ceny:
-            st.warning(f"⚠ {len(dev_budget.brak_ceny)} pozycji bez ceny katalogowej — "
-                       "cennik nie zawiera jeszcze urządzeń obiektowych, uzupełnij ręcznie.")
-    else:
-        st.caption("Brak zaznaczonych urządzeń — sekcja 1a pozwala je dodać.")
+               "bo dotyczą urządzeń obiektowych (np. przetworników), a nie kart PLC/szafy/SCADA. "
+               "**Cenę katalogową wpisujesz wprost w tabeli** — cennik nie zawiera urządzeń "
+               "obiektowych, więc bez wpisania ceny pozycja zostaje jako „BRAK”.")
+    dev_budget = render_device_budget_table(devices, rabaty)
 
     st.subheader("10. Weryfikacja kompletności oferty")
     # Reużywamy sel/cab/cab_sel/asix/budget policzone wyżej (sekcje 3-9) —
@@ -1314,8 +1396,15 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
                    "Ostateczna decyzja należy do inżyniera.")
 
     st.subheader("11. Pobierz dokumenty")
-    word_bio = create_word_report(devices, balance, project_label, platforma, rabaty, st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()))
-    excel_bio = create_devices_excel(devices, balance, platforma, rabaty, cable_length, asix_factor, st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()))
+    # price_overrides MUSI tu trafić: bez niego ręcznie wpisane ceny urządzeń
+    # AKPiA widać było na ekranie, ale w POBRANYM Wordzie/Excelu te same
+    # pozycje wychodziły jako "BRAK" - czyli dokument wysyłany klientowi był
+    # zaniżony względem tego, co inżynier przed chwilą zatwierdził.
+    # (Ścieżka zapisu do historii, save_outputs_to_disk, przekazywała je
+    # poprawnie od początku - rozjeżdżały się tylko przyciski pobierania.)
+    _overrides = st.session_state.get("akpia_price_overrides", {})
+    word_bio = create_word_report(devices, balance, project_label, platforma, rabaty, st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()), price_overrides=_overrides)
+    excel_bio = create_devices_excel(devices, balance, platforma, rabaty, cable_length, asix_factor, st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()), price_overrides=_overrides)
     # sel/cab_sel/asix/budget/dev_budget policzone wyżej (sekcje 3, 7, 5, 9, 9a) -
     # PDF dostaje te same obiekty zamiast dobierać PLC/szafę/SCADA/kosztorys
     # jeszcze raz od zera.

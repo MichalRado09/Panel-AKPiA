@@ -167,3 +167,37 @@ def test_price_override_ma_pierwszenstwo_przed_cennikiem():
     assert sel.items[0].cena_katalogowa == 250.0
     assert sel.items[0].wartosc_netto == 500.0  # 250 * ilosc(2), bez rabatu
     assert len(sel.brak_ceny) == 0
+
+
+# --- klucz pozycji: warunek edycji ceny wprost w kosztorysie (sekcja 9a) ------
+
+def test_pozycja_kosztorysu_niesie_klucz_urzadzenia():
+    """
+    Uwaga 6 z testów przełożonego: „Ad. 9a. Kosztorys urządzeń AKPiA - nie mogę
+    ręcznie uzupełnić cen".
+
+    Cenę dało się podać już wcześniej, ale w sekcji 1a (lista WYBORU urządzeń),
+    a nie w 9a, gdzie widać kosztorys i słowo „BRAK". Żeby dało się ją wpisać
+    wprost w tabeli kosztorysu, pozycja musi wiedzieć, z którego urządzenia
+    powstała - inaczej UI nie ma czym zaadresować price_overrides.
+    """
+    devs = [Device(lp=1, oznaczenie="PT-01", opis="Przetwornik ciśnienia", ilosc=2)]
+    keys = {device_key(devs[0], 0)}
+    sel = build_device_budget(devs, keys)
+    assert sel.items[0].klucz == device_key(devs[0], 0)
+
+
+def test_cena_reczna_nadpisuje_i_liczy_wartosc():
+    """
+    Cena wpisana ręcznie ma być użyta zamiast szukania w cenniku i ma
+    natychmiast dać wartość netto - to jest cały sens tej edycji.
+    """
+    devs = [Device(lp=1, oznaczenie="PT-01", opis="Przetwornik ciśnienia", ilosc=3)]
+    key = device_key(devs[0], 0)
+    sel = build_device_budget(devs, {key}, rabaty={"AKPIA_URZADZENIA": 10},
+                              price_overrides={key: 1000.0})
+    it = sel.items[0]
+    assert it.cena_katalogowa == 1000.0
+    assert it.cena_netto_jed == 900.00
+    assert it.wartosc_netto == 2700.00
+    assert sel.brak_ceny == []
