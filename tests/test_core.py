@@ -1468,3 +1468,28 @@ def test_branza_nie_rusza_bilansu_io():
     assert branza_urzadzenia(devices[0].opis) == BRANZA_POZA
     bal = count_io(devices, reserve_percent=0)
     assert bal.base["DO"] == 2, "oznaczenie branży nie może wykluczyć sygnału z bilansu"
+
+
+# --- cennik: polski zapis liczby w kolumnie ceny ------------------------------
+
+def test_cena_przyjmuje_polski_zapis_liczby():
+    """
+    Cennik uzupełnia inżynier ręcznie, zwykle kopiując z oferty dostawcy albo
+    z Excela - a tam separatorem dziesiętnym jest PRZECINEK, a tysiące bywają
+    rozdzielone spacją. Wcześniej takie komórki leciały przez gołe float(),
+    ValueError był łapany i cena po cichu stawała się None: pozycja pokazywała
+    "BRAK CENY" i WYPADAŁA Z SUMY, mimo że inżynier ją wpisał.
+    """
+    from core.budget import _parse_cena
+    assert _parse_cena("4350") == 4350.0
+    assert _parse_cena("4350.50") == 4350.50
+    assert _parse_cena("4350,50") == 4350.50      # przecinek dziesiętny
+    assert _parse_cena("1 234,50") == 1234.50     # spacja jako separator tysięcy
+    assert _parse_cena("1 234,50") == 1234.50  # spacja niełamliwa (kopiuj-wklej)
+
+
+def test_cena_pusta_lub_niepoprawna_to_brak_ceny():
+    """Pusta komórka i śmieć dają None - „BRAK CENY", nie zero."""
+    from core.budget import _parse_cena
+    for wartosc in ("", "   ", None, "do ustalenia", "-"):
+        assert _parse_cena(wartosc) is None, wartosc
