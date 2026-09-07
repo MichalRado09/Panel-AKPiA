@@ -511,6 +511,131 @@ def test_asix_dobor_pakietu():
     assert sel.prog_licencyjny == 256    # najbliższy wyższy próg
 
 
+# --- scada_asix: architektura jako decyzja inżyniera, nie aplikacji -----------
+
+def _bal_asix(di=80, do=24, ai=56, ao=16):
+    bal = IOBalance()
+    bal.reserved = {"DI": di, "DO": do, "AI": ai, "AO": ao}
+    bal.base = dict(bal.reserved)
+    return bal
+
+
+def test_asix_domyslnie_zachowuje_stare_zachowanie_auto():
+    """
+    Wywołanie bez parametrów architektury musi dawać DOKŁADNIE to, co dawała
+    wersja w pełni automatyczna — inaczej dołożenie wyboru po cichu zmieniłoby
+    wyceny wszystkich dotychczasowych projektów.
+    """
+    sel = select_asix(_bal_asix(), wspolczynnik=1.2)
+    assert sel.architektura_zrodlo == "auto"
+    assert sel.typ_licencji == sel.sugestia_typ
+    assert sel.n_terminale == sel.sugestia_terminale
+    assert [it.nr_katalogowy for it in sel.items] == ["ASIX-WA256W+1R PM"]
+
+
+def test_asix_inzynier_wymusza_serwer_wbrew_skali():
+    """
+    212 zmiennych -> skala sugeruje stację. Klient wymaga serwera i aplikacja
+    ma go posłuchać, a nie „wiedzieć lepiej".
+    """
+    sel = select_asix(_bal_asix(), architektura="serwer")
+    assert sel.sugestia_typ == "stacja"       # sugestia się nie zmieniła...
+    assert sel.typ_licencji == "serwer"       # ...ale decyduje inżynier
+    assert sel.architektura_zrodlo == "inżynier"
+    assert sel.items[0].nr_katalogowy == "ASIX-WA256S+1R PM"
+
+
+def test_asix_redundancja_to_dwie_licencje_serwera():
+    sel = select_asix(_bal_asix(), architektura="serwer", redundancja=True)
+    assert sel.items[0].ilosc == 2
+    assert any("2 licencje serwera" in w for w in sel.warnings)
+
+
+def test_asix_redundancja_stacji_odrzucona_z_ostrzezeniem():
+    """
+    Redundancja dotyczy serwera. Zamiast po cichu policzyć dwie stacje
+    (i zawyżyć ofertę), dobór ma odmówić i powiedzieć dlaczego.
+    """
+    sel = select_asix(_bal_asix(), architektura="stacja", redundancja=True)
+    assert sel.redundancja is False
+    assert sel.items[0].ilosc == 1
+    assert any("Redundancja pominięta" in w for w in sel.warnings)
+
+
+def test_asix_terminale_wg_inzyniera():
+    sel = select_asix(_bal_asix(), architektura="serwer", n_terminale=4)
+    terminale = [it for it in sel.items if it.nr_katalogowy == "ASIX-WANLO + 1R PM"]
+    assert terminale and terminale[0].ilosc == 4
+
+
+def test_asix_terminale_przy_stacji_pomijane_z_ostrzezeniem():
+    sel = select_asix(_bal_asix(), architektura="stacja", n_terminale=3)
+    assert not any(it.nr_katalogowy == "ASIX-WANLO + 1R PM" for it in sel.items)
+    assert any("terminale" in w for w in sel.warnings)
+
+
+def test_asix_stacje_zdalne_www_lite():
+    """
+    3 zdalnych klientów WWW = terminal WWW z pierwszym klientem + 2 kolejnych.
+    Wariant Lite ma trafić na inny numer katalogowy niż pełny.
+    """
+    sel = select_asix(_bal_asix(), dostep_zdalny="WWW", n_klientow_zdalnych=3,
+                      klient_www_lite=True)
+    m = {it.nr_katalogowy: it.ilosc for it in sel.items}
+    assert m["As4www+1CAL"] == 1
+    assert m["As4www1CAL-Lite"] == 2
+    assert "As4www1CAL" not in m          # pełny klient NIE ma się pojawić
+
+    pelny = select_asix(_bal_asix(), dostep_zdalny="WWW", n_klientow_zdalnych=3)
+    assert {it.nr_katalogowy for it in pelny.items} >= {"As4www+1CAL", "As4www1CAL"}
+
+
+def test_asix_stacje_zdalne_rds():
+    sel = select_asix(_bal_asix(), dostep_zdalny="RDS", n_klientow_zdalnych=2)
+    m = {it.nr_katalogowy: it.ilosc for it in sel.items}
+    assert m["ASIX-WANLO + 1R PM"] == 1
+    assert m["AsRDSCAL"] == 1             # pierwszy klient jest w terminalu
+
+
+def test_asix_dostep_zdalny_zawsze_z_ostrzezeniem_o_pakietowaniu():
+    """
+    Skład licencji zdalnych jest złożony z pojedynczych pozycji cennika,
+    a zasady pakietowania u producenta bywają inne. To musi być widoczne
+    w wyniku, a nie tylko w komentarzu w kodzie.
+    """
+    sel = select_asix(_bal_asix(), dostep_zdalny="RDS", n_klientow_zdalnych=2)
+    assert any("ASKOM" in w for w in sel.warnings)
+
+
+def test_asix_zero_klientow_nie_dodaje_licencji_zdalnych():
+    sel = select_asix(_bal_asix(), dostep_zdalny="WWW", n_klientow_zdalnych=0)
+    assert not any("www" in it.nr_katalogowy.lower() for it in sel.items)
+
+
+def test_asix_nieznana_architektura_odrzucona():
+    import pytest
+    with pytest.raises(ValueError):
+        select_asix(_bal_asix(), architektura="chmura")
+    with pytest.raises(ValueError):
+        select_asix(_bal_asix(), dostep_zdalny="telepatia")
+
+
+def test_sugeruj_architekture_zgodna_z_select_asix():
+    """
+    Panel wypełnia pole „liczba terminali" z sugeruj_architekture() ZANIM
+    powstanie widget. Ta sugestia musi być identyczna z tym, co policzy
+    select_asix — inaczej pole startowałoby od innej wartości, niż wynika
+    z doboru.
+    """
+    from core.scada_asix import sugeruj_architekture
+    for bal in (_bal_asix(), _bal_asix(400, 200, 300, 100), _bal_asix(4, 2, 2, 1)):
+        typ, terminale, opis = sugeruj_architekture(bal, 1.2)
+        sel = select_asix(bal, wspolczynnik=1.2)
+        assert (typ, terminale, opis) == (
+            sel.sugestia_typ, sel.sugestia_terminale, sel.sugestia_opis
+        )
+
+
 # --- cables -------------------------------------------------------------------
 
 from core.cables import select_cables, NADDATEK_MONTAZOWY

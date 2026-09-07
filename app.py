@@ -22,7 +22,10 @@ from core.plc_selector import select_plc, format_selection, PLATFORMY
 from core.budget import calculate_budget, format_budget, GRUPY_RABATOWE
 from core.cables import select_cables
 from core.comparison import compare_variants
-from core.scada_asix import select_asix
+from core.scada_asix import (
+    select_asix, opis_architektury, sugeruj_architekture,
+    ARCHITEKTURY, DOSTEP_ZDALNY,
+)
 from core.cabinet import select_cabinet
 from core.device_budget import build_device_budget, device_key, GRUPA_RABATOWA
 from core.extraction_diff import compare_extractions, ExtractionDiff
@@ -470,13 +473,16 @@ def create_devices_excel(devices, balance, platforma: str, rabaty: dict = None, 
         {"Ilość": cab_sel.prad_przetworniki_ma, "Nr katalogowy": "Przetworniki [mA]", "Nazwa": "", "Jednostka": "mA", "Reguła doboru": "", "Grupa rabatowa": ""},
         {"Ilość": cab_sel.prad_z_zapasem_a, "Nr katalogowy": "RAZEM z zapasem 30% [A]", "Nazwa": "", "Jednostka": "A", "Reguła doboru": "", "Grupa rabatowa": ""},
     ])
-    asix = select_asix(balance, wspolczynnik=asix_factor)
+    # Ta sama architektura, co wybrana w sekcji 5 — inaczej oferta w Excelu
+    # różniłaby się od tego, co inżynier widzi i zatwierdza na ekranie.
+    asix = select_asix(balance, wspolczynnik=asix_factor, **get_asix_arch())
     df_scada = pd.DataFrame([
         {"Parametr": "Sygnałów I/O (po rezerwie)", "Wartość": asix.zmienne_io},
         {"Parametr": f"Współczynnik zmiennych", "Wartość": asix.wspolczynnik},
         {"Parametr": "Zmiennych procesowych", "Wartość": asix.zmienne_obliczone},
         {"Parametr": "Pakiet licencyjny", "Wartość": asix.prog_nazwa},
-        {"Parametr": "Sugestia architektury", "Wartość": asix.sugestia_opis},
+        {"Parametr": "Architektura (przyjęta)", "Wartość": opis_architektury(asix)},
+        {"Parametr": "Sugestia ze skali projektu", "Wartość": asix.sugestia_opis},
     ] + [
         {"Parametr": f"Pozycja: {it.nr_katalogowy}", "Wartość": f"{it.ilosc}x {it.nazwa} ({it.cena_katalogowa} PLN)" if it.cena_katalogowa else f"{it.ilosc}x {it.nazwa}"}
         for it in asix.items
@@ -903,6 +909,90 @@ def render_undecided_signal_resolver(devices: list) -> None:
                 st.rerun()
 
 
+def get_asix_arch() -> dict:
+    """
+    Parametry architektury SCADA wybrane przez inżyniera w sekcji 5.
+
+    Czytane z session_state, żeby te SAME ustawienia trafiły do eksportów
+    (Excel/Word) i do walidatora — inaczej oferta w pliku różniłaby się od
+    tego, co widać na ekranie.
+
+    Domyślne wartości = pełne "auto", czyli zachowanie sprzed wprowadzenia
+    wyboru architektury.
+    """
+    return {
+        "architektura": st.session_state.get("asix_architektura", "auto"),
+        "redundancja": st.session_state.get("asix_redundancja", False),
+        "n_terminale": st.session_state.get("asix_n_terminale"),
+        "dostep_zdalny": st.session_state.get("asix_dostep_zdalny", "brak"),
+        "n_klientow_zdalnych": st.session_state.get("asix_n_klientow", 0),
+        "klient_www_lite": st.session_state.get("asix_www_lite", False),
+    }
+
+
+def render_asix_architecture_controls(balance, wspolczynnik: float) -> dict:
+    """
+    Wybór architektury SCADA — decyzja inżyniera, nie aplikacji.
+
+    Dotąd architekturę wyliczała wyłącznie skala projektu (liczba zmiennych)
+    i NIE DAŁO SIĘ jej zmienić z interfejsu, mimo że dokumentacja modułu
+    obiecywała, że „inżynier ZAWSZE może nadpisać sugestię". Realnie
+    architekturę narzuca klient w wymaganiach (serwer zamiast stacji,
+    redundancja, liczba stanowisk, dostęp zdalny) i dwa węzły o tej samej
+    liczbie sygnałów potrafią wymagać zupełnie różnych rozwiązań.
+
+    Z liczby sygnałów wynika tylko PRÓG LICENCYJNY (limit zmiennych) — i to
+    zostaje liczone automatycznie, bo tego klient nie negocjuje.
+
+    Zwraca kwargs do select_asix().
+    """
+    st.caption(
+        "Architekturę wybiera inżynier — z liczby sygnałów wynika tylko próg "
+        "licencyjny (limit zmiennych). „auto” trzyma się sugestii ze skali projektu."
+    )
+
+    # Pole „liczba terminali" musi wystartować od SUGESTII, nie od zera —
+    # inaczej architektura serwerowa cicho gubiłaby terminale, które
+    # poprzednia (w pełni automatyczna) wersja doliczała sama.
+    # Zapis do session_state PRZED utworzeniem widgetu o tym kluczu jest
+    # dozwolony; odwrotna kolejność rzuca StreamlitAPIException.
+    _, sug_terminale, _ = sugeruj_architekture(balance, wspolczynnik)
+    if "asix_n_terminale" not in st.session_state:
+        st.session_state.asix_n_terminale = sug_terminale
+
+    c1, c2, c3 = st.columns([1.2, 1, 1.4])
+
+    c1.selectbox(
+        "Architektura", ARCHITEKTURY, key="asix_architektura",
+        help="auto = wg skali projektu; stacja = 1 stanowisko; serwer = serwer + terminale.",
+    )
+    c1.checkbox(
+        "Serwer redundantny", key="asix_redundancja",
+        help="Wycena jako 2 licencje serwera. Dotyczy tylko architektury „serwer”.",
+    )
+    c2.number_input(
+        "Terminale operatorskie", min_value=0, max_value=50, step=1,
+        key="asix_n_terminale",
+        help=f"Sugestia ze skali projektu: {sug_terminale}. "
+             "Zmień, jeśli klient wymaga innej liczby stanowisk.",
+    )
+    c3.selectbox(
+        "Dostęp zdalny", DOSTEP_ZDALNY, key="asix_dostep_zdalny",
+        help="RDS = terminal serwera + klienci; WWW = terminal przeglądarkowy.",
+    )
+    c3.number_input(
+        "Klientów zdalnych", min_value=0, max_value=100, step=1, key="asix_n_klientow",
+    )
+    if st.session_state.get("asix_dostep_zdalny") == "WWW":
+        c3.checkbox(
+            "Klienci WWW typu Lite (tylko podgląd)", key="asix_www_lite",
+            help="Lite jest wyraźnie tańszy — wystarcza, gdy zdalny użytkownik "
+                 "ma tylko podglądać, bez sterowania.",
+        )
+
+    return get_asix_arch()
+
+
 def render_device_budget_selector(devices, rabaty: dict) -> None:
     """
     Checkbox-lista urządzeń obiektowych do RĘCZNEGO oznaczenia, które wchodzą
@@ -1046,13 +1136,15 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
               f"(śr. trasa {cable_length}m, naddatek +15%)")
 
     st.subheader("5. SCADA ASIX")
-    asix = select_asix(balance, wspolczynnik=asix_factor)
+    arch = render_asix_architecture_controls(balance, asix_factor)
+    asix = select_asix(balance, wspolczynnik=asix_factor, **arch)
     scada_cols = st.columns(3)
     scada_cols[0].metric("Sygnałów I/O", asix.zmienne_io)
     scada_cols[1].metric("Zmiennych procesowych", asix.zmienne_obliczone,
                          f"×{asix.wspolczynnik}")
     scada_cols[2].metric("Pakiet licencyjny", asix.prog_nazwa)
-    st.info(f"💡 Sugestia architektury: {asix.sugestia_opis}")
+    st.success(f"**Przyjęta architektura:** {opis_architektury(asix)}")
+    st.caption(f"💡 Sugestia ze skali projektu (punkt wyjścia): {asix.sugestia_opis}")
     if asix.items:
         df_asix = pd.DataFrame([
             {"Nr katalogowy": it.nr_katalogowy, "Nazwa": it.nazwa,
