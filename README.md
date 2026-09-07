@@ -1,34 +1,45 @@
-# Panel Inżyniera AKPiA — Krok 1: Rdzeń deterministyczny
+# Panel Inżyniera AKPiA
 
-Czysty rozdział AI ↔ Python. AI ekstrahuje surową listę urządzeń;
-cały dobór i zliczanie robi Python w `core/`. Zero zależności od Streamlit
-i od API — moduły uruchamiasz i testujesz samodzielnie.
+Narzędzie do wstępnego kosztorysowania automatyki: wgrywasz zestawienie
+urządzeń (Excel), dostajesz bilans sygnałów I/O, dobór sterownika, wyposażenie
+szafy, zestawienie kablowe, licencję SCADA i kosztorys — w Wordzie, Excelu i PDF.
 
-## Struktura
-
-```
-core/
-  signal_rules.py   # słownik DI/DO/AI/AO (Start→DO, Awaria→DI, jawny (AO) ma priorytet)
-  device_rules.py   # słownik typów urządzeń → domyślne sygnały (gdy kolumny puste)
-  parser.py         # parser prostego formatu, mapuje kolumny PO NAZWIE, obsługuje brudy
-  io_counter.py     # zliczanie I/O + rezerwa (math.ceil, zawsze w górę)
-tests/
-  test_core.py      # 16 testów jednostkowych
-asix_cennik.csv     # realny fragment cennika ASIX (z Info handlowe 3/2026)
-```
+**Nie zastępuje inżyniera — przygotowuje mu punkt wyjścia.** AI (opcjonalnie)
+tylko wyciąga listę urządzeń z dokumentacji; wszystkie liczby wylicza
+deterministyczny kod w `core/`, według jawnych, audytowalnych reguł.
 
 ## Jak uruchomić
 
 ```bash
-# Parser na Twoim pliku:
-python -m core.parser "Zestawienie_aparatury_i_urządzeń.xlsx"
+pip install -r requirements.txt
 
-# Bilans I/O (arg2 = rezerwa %, arg3 = numer arkusza):
-python -m core.io_counter "Zestawienie_aparatury_i_urządzeń.xlsx" 30 0
+# Hasło dostępu (wymagane) i opcjonalnie klucz Gemini do ścieżki AI:
+cp .env.example .env      # i wpisz APP_PASSWORD=...
 
-# Testy:
-python -m pytest tests/ -v        # jeśli masz pytest
+streamlit run app.py
 ```
+
+Aplikacja działa **w całości bez klucza API** — przycisk „Policz I/O z Excela
+(bez AI)" przechodzi cały przepływ offline. Klucz Gemini jest potrzebny wyłącznie
+do wyciągania urządzeń z PDF-ów i dokumentów mieszanych.
+
+Szczegóły wszystkich plików, których aplikacja oczekuje (i co się stanie, gdy
+któregoś zabraknie) — w [WYMAGANE_PLIKI.md](WYMAGANE_PLIKI.md).
+
+## Czemu można ufać, a co jest szacunkiem
+
+To najważniejsza tabela w tym pliku. Aplikacja **sama oznacza** w interfejsie
+pozycje z drugiej kolumny — nic nie jest podawane jako pewnik bez pokrycia.
+
+| Obszar | Status | Podstawa |
+|---|---|---|
+| Dobór sterownika (karty, CPU, zasilacz E-bus) | **zwalidowany co do sztuki** | Cała listwa DPK2 Wujek, potwierdzona niezależnie listą materiałów i rysunkiem konfiguracji |
+| Zliczanie I/O, rezerwa, klasyfikacja sygnałów | **reguły jawne, testowane** | 113 testów jednostkowych |
+| Wyposażenie szafy (złączki, przekaźniki) | ⚠ oszacowanie | Reguły z jednego projektu; na drugim błąd 7–33% |
+| Zestawienie kablowe (metraż) | ⚠ oszacowanie | Jedna średnia trasa dla wszystkich typów, choć realnie różnią się dwukrotnie |
+| Licencja SCADA (współczynnik ×1,2) | ⚠ do potwierdzenia | Reguła uproszczona, nie potwierdzona projektem |
+| HMI, platforma S7-1200 | wybór ręczny | Świadomie bez automatu — brak zwalidowanego wzorca |
+| Kosztorys | zależy od `cennik.csv` | Pozycje bez ceny pokazują „BRAK CENY" |
 
 ## Zasady zaszyte w kodzie (audytowalne)
 
@@ -39,6 +50,15 @@ python -m pytest tests/ -v        # jeśli masz pytest
    liczony osobno, NIE wchodzi do DI/DO/AI/AO.
 3. **Rezerwa zawsze w górę:** `ceil(baza * (1 + r/100))`, osobno na typ.
 4. **Kolumny mapowane po nazwie** — odporność na przesunięcia i różnice nagłówków.
+
+---
+
+# Historia rozwoju i walidacji
+
+Wszystko poniżej to **zapis chronologiczny** — kolejne kroki budowy, wykryte
+błędy i walidacje na realnych projektach. Jest tu celowo szczegółowo, bo każda
+reguła doboru musi mieć udokumentowane źródło i zakres niepewności. Do bieżącej
+pracy z aplikacją wystarczy wszystko powyżej tej linii.
 
 ## Wynik na realnym pliku (arkusz „Sheet1”, rezerwa 30%)
 
