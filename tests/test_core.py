@@ -335,6 +335,62 @@ def test_selector_cx7000_tom():
     assert m["CX7000"] == 1
 
 
+# --- Siemens S7-1500 (dołożona na prośbę inżyniera) ---------------------------
+
+def test_katalog_s7_1500_wczytuje():
+    cat = load_catalog("Siemens S7-1500")
+    assert cat["CPU"]["nr"] == "6ES7513-1AL02-0AB0"
+    assert cat["DI"]["kanaly"] == 32
+    assert cat["DO"]["kanaly"] == 32
+    assert cat["AI"]["kanaly"] == 8
+    assert cat["AO"]["kanaly"] == 4
+
+
+def test_selector_s7_1500_zlacza_czolowe_na_kazda_karte_io():
+    """
+    S7-1500 nie ma BaseUnitów (to specyfika ET200SP), ale KAŻDA karta I/O
+    wymaga osobnego złącza czołowego - w katalogu Siemensa jest to oddzielna
+    pozycja zamówieniowa, więc jej pominięcie zaniżałoby ofertę o tyle sztuk,
+    ile jest kart.
+
+    Moduł komunikacyjny CM PtP ma własne gniazdo sub-D i złącza czołowego NIE
+    potrzebuje - dlatego liczymy po kartach I/O, nie po modułach na szynie.
+    """
+    sel = select_plc(_mk_balance(80, 24, 56, 16), "Siemens S7-1500")
+    m = {it.nr: it.ilosc for it in sel.items}
+    # 80/32 -> 3 DI, 24/32 -> 1 DO, 56/8 -> 7 AI, 16/4 -> 4 AO = 15 kart I/O
+    assert m["6ES7521-1BL00-0AB0"] == 3
+    assert m["6ES7522-1BL01-0AB0"] == 1
+    assert m["6ES7531-7KF00-0AB0"] == 7
+    assert m["6ES7532-5HD00-0AB0"] == 4
+    assert m["6ES7592-1BM00-0XB0"] == 15   # złącza czołowe = karty I/O
+    assert sel.modules_on_rail == 16       # ...a na szynie jest jeszcze CM PtP
+    assert m["6ES7590-1AE80-0AA0"] == 1    # szyna profilowa: 1 na stację
+
+
+def test_selector_s7_1500_ma_zasilacz_systemowy():
+    """
+    Zasilacz systemowy PM 1507 to osobna pozycja, której platformy Beckhoffa
+    nie mają (CX ma zasilanie w obudowie). Regresja na wypadek, gdyby ktoś
+    zawęził listę pozycji systemowych w select_plc().
+    """
+    sel = select_plc(_mk_balance(8, 8, 8, 4), "Siemens S7-1500")
+    assert any(it.katalog_typ == "SYSPSU" for it in sel.items)
+
+
+def test_selector_s7_1500_ostrzega_o_pochodzeniu_katalogu():
+    """
+    Beckhoff CX9020 i ET200SP odtworzono z realnych projektów wykonawczych,
+    S7-1500 nie - i to musi być widać w WYNIKU doboru, nie tylko w komentarzu
+    w kodzie, bo z tego wyniku powstaje oferta dla klienta.
+    """
+    sel = select_plc(_mk_balance(8, 8, 8, 4), "Siemens S7-1500")
+    assert any("TYPOWA konfiguracja" in w for w in sel.warnings)
+
+    bez_uwagi = select_plc(_mk_balance(8, 8, 8, 4), "Beckhoff CX9020")
+    assert not any("TYPOWA konfiguracja" in w for w in bez_uwagi.warnings)
+
+
 # --- budget: kalkulacja cen netto --------------------------------------------
 
 from core.budget import calculate_budget, _round_netto, load_cennik

@@ -1,0 +1,11 @@
+typ;nr_katalogowy;opis;kanaly;rola;grupa_rabatowa;pobor_ebus_ma;zasila_ebus_ma
+CPU;6ES7513-1AL02-0AB0;CPU 1513-1 PN;;systemowy;SIEMENS;;
+SYSPSU;6EP1332-4BA00;Zasilacz systemowy PM 1507 24V DC / 3A;;systemowy;SIEMENS;;
+SDCARD;6ES7954-8LE03-0AA0;Karta pamieci SIMATIC 12 MB;;systemowy;SIEMENS;;
+SERIAL;6ES7541-1AB00-0AB0;Modul komunikacji szeregowej CM PtP RS422/485 HF;;systemowy;SIEMENS;;
+DI;6ES7521-1BL00-0AB0;Modul wejsc binarnych 32x DI 24V DC HF;32;io;SIEMENS;;
+DO;6ES7522-1BL01-0AB0;Modul wyjsc binarnych 32x DQ 24V DC / 0,5A ST;32;io;SIEMENS;;
+AI;6ES7531-7KF00-0AB0;Modul wejsc analogowych 8x AI U/I/RTD/TC ST;8;io;SIEMENS;;
+AO;6ES7532-5HD00-0AB0;Modul wyjsc analogowych 4x AQ U/I ST;4;io;SIEMENS;;
+FRONTCONN;6ES7592-1BM00-0XB0;Zlacze czolowe 40-pin, srubowe (do modulu I/O);;montaz;SIEMENS;;
+RAIL;6ES7590-1AE80-0AA0;Szyna profilowa S7-1500, 482 mm;;montaz;SIEMENS;;
