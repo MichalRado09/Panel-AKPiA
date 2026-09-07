@@ -145,3 +145,25 @@ def test_rabat_stosowany_do_grupy_akpia():
                                cennik_file="plik_ktory_nie_istnieje.csv")
     assert sel.items[0].rabat_pct == 15
     assert sel.items[0].cena_netto_jed is None  # brak ceny bazowej -> nic do przemnożenia
+
+
+def test_price_override_ma_pierwszenstwo_przed_cennikiem():
+    """
+    Ręcznie wpisana cena (price_overrides) ma pierwszeństwo przed cennikiem —
+    to jawna decyzja inżyniera dla konkretnego urządzenia w bieżącej sesji,
+    używana gdy cennik.csv jeszcze nie ma wpisu dla urządzeń obiektowych
+    (typowy stan - patrz komentarz w core/device_budget.py).
+    """
+    df = pd.DataFrame([
+        (1, "A", "TIC-1", "Przetwornik temperatury", 2, "4-20mA", "-"),
+    ], columns=KOLUMNY)
+    dev, _ = parse_devices(df)
+    klucz = device_key(dev[0], 0)
+
+    sel = build_device_budget(
+        dev, {klucz}, rabaty={}, cennik_file="plik_ktory_nie_istnieje.csv",
+        price_overrides={klucz: 250.0},
+    )
+    assert sel.items[0].cena_katalogowa == 250.0
+    assert sel.items[0].wartosc_netto == 500.0  # 250 * ilosc(2), bez rabatu
+    assert len(sel.brak_ceny) == 0

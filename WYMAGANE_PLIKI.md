@@ -39,7 +39,7 @@ nie ceny, więc bezpieczne do publikacji.
 **Wymagane kolumny (dokładnie te nazwy w nagłówku):**
 
 ```
-typ;nr_katalogowy;opis;kanaly;rola;grupa_rabatowa
+typ;nr_katalogowy;opis;kanaly;rola;grupa_rabatowa;pobor_ebus_ma;zasila_ebus_ma
 ```
 
 | Kolumna | Opis | Przykład |
@@ -50,6 +50,23 @@ typ;nr_katalogowy;opis;kanaly;rola;grupa_rabatowa
 | `kanaly` | Liczba kanałów I/O na karcie (int). **Puste** dla pozycji systemowych/montażowych (CPU, licencja itd.) — tylko `DI`/`DO`/`AI`/`AO` muszą mieć tu liczbę. | `8` |
 | `rola` | Grupa do klasyfikacji w kosztorysie: `io`, `systemowy`, `montaz`. | `io` |
 | `grupa_rabatowa` | Klucz łączący pozycję z suwakiem rabatu w panelu (`BECKHOFF`, `SIEMENS`, `ASIX`, `APARATURA`, `KABLE`). | `BECKHOFF` |
+| `pobor_ebus_ma` | Ile prądu magistrali E-bus **pobiera** ta karta [mA]. Puste = brak danych. | `130` |
+| `zasila_ebus_ma` | Ile prądu magistrali **dostarcza** (CPU i zasilacz E-bus). Puste dla zwykłych kart. | `2000` |
+
+**Po co kolumny E-bus (tylko Beckhoff).** Na ich podstawie liczona jest liczba
+zasilaczy magistrali (EL9410): sumowany jest pobór wszystkich kart, odejmowane
+to, co daje CPU, a deficyt dzielony przez wydajność zasilacza. Wcześniej
+aplikacja używała zgrubnej reguły „co 12 modułów", która na projekcie
+referencyjnym DPK2 Wujek dawała 2 sztuki zamiast rzeczywistej 1.
+
+Wpisane wartości są **typowe katalogowe, nie odczyty z kart konkretnych
+egzemplarzy** — dlatego dobór zawsze dopisuje o tym uwagę. Reguła w tej
+postaci odtwarza całą listwę Wujka co do sztuki. Jeśli te kolumny zostaną
+puste (np. przy dodawaniu nowej platformy), dobór wraca do starej reguły
+po liczbie modułów i wyraźnie zaznacza, że to zgrubny szacunek.
+
+Siemens ET200SP ma te kolumny puste — tam nie ma magistrali E-bus, rolę
+zasilania pełnią BaseUnity i grupy potencjałowe.
 
 **Co się stanie bez tego pliku:** `FileNotFoundError` — aplikacja się wywali
 przy próbie doboru PLC dla tej platformy. To jedyny z plików danych, który
@@ -133,7 +150,21 @@ wielkość liter — patrz `_COLUMN_ALIASES` w `core/parser.py`):
 | `Sygnał Analogowy` / `4-20mA` | Opis sygnału analogowego (np. „Zadawanie prędkości (AO)") |
 | `Sygnał Cyfrowy` / `DI/DO` | Opis sygnału cyfrowego (np. „Start, Praca, Awaria") |
 | `Komunikacja` | Magistrala (Modbus, Profinet...) |
+| `Pomiar?` | `lokalny` / `zdalny` — **wpływa na bilans I/O**, patrz niżej |
 | `Uwagi` | Dowolny tekst |
+
+**Kolumna `Pomiar?` (opcjonalna, ale znacząca).** Jeśli plik ją ma, wiersz
+oznaczony jako `lokalny` traktowany jest jako wskaźnik czytany wzrokowo na
+obiekcie (manometr, termometr tarczowy) — **nie generuje sygnału do
+sterownika**, więc reguła typu urządzenia nie jest dla niego stosowana.
+Wiersz zostaje na liście urządzeń (może wchodzić w zakres dostawy AKPiA
+i podlegać wycenie w sekcji 1a), tylko bez I/O. Ma to znaczenie
+w zestawieniach, gdzie ten sam punkt pomiarowy jest rozpisany na **parę**
+wierszy `lokalny` + `zdalny` o tym samym oznaczeniu — sygnał liczy wtedy
+wyłącznie `zdalny`. Wszystko inne (`zdalny`, pusta komórka, inna
+konwencja) zachowuje się jak dotąd. Sygnał wpisany JAWNIE w kolumnie
+sygnałów ma pierwszeństwo nawet przy `lokalny` — parser zgłasza wtedy
+sprzeczność do weryfikacji.
 
 **Żadna kolumna nie jest bezwzględnie wymagana w sensie "aplikacja się wywali"**
 — ale w praktyce kolumna `opis` (Typ / Opis odbiornika) jest krytyczna: bez niej
@@ -142,10 +173,34 @@ parser nie rozpozna żadnego wiersza jako urządzenia i zwróci **0 urządzeń**
 (`analog`, `cyfrowy`) jest łagodniejszy — urządzenia się sparsują, ale ich
 sygnały będą w całości wywnioskowane z reguły typu urządzenia (fallback
 opisany w README, sekcja "Zasady zaszyte w kodzie"). Puste komórki w
-`Ilość` domyślnie przyjmują wartość 1 (z ostrzeżeniem). Dodatkowe kolumny
-w pliku (np. `Producent`, `Dostawa`, `Pomiar?`) są ignorowane — nie
+`Ilość` domyślnie przyjmują wartość 1 (z ostrzeżeniem). Pozostałe dodatkowe
+kolumny w pliku (np. `Producent`, `Dostawa`, `Napęd?`) są ignorowane — nie
 przeszkadzają, ale też nie są wykorzystywane (patrz README, sekcja o
 formacie OFE_381).
+
+---
+
+## 6. `ustawienia_sesji.json` i `nauczone_decyzje_sygnalow.json` — pamięć aplikacji (OPCJONALNE)
+
+**Lokalizacja:** katalog główny, obok `app.py`.
+**Czy jest w repo:** NIE (w `.gitignore`) — tworzone i nadpisywane automatycznie
+przez aplikację, mogą odzwierciedlać rzeczywiste rabaty firmy i nazewnictwo
+z realnych projektów, więc traktowane tak samo ostrożnie jak `cennik.csv`.
+
+| Plik | Co przechowuje | Skąd |
+|---|---|---|
+| `ustawienia_sesji.json` | Ostatnio użyte ustawienia panelu bocznego (platforma, rezerwa, rabaty, trasa kablowa, współczynnik ASIX) | Zapisywane automatycznie przy każdym renderze panelu bocznego |
+| `nauczone_decyzje_sygnalow.json` | Podpowiedzi DI/DO/AI/AO dla sekcji „1b. Rozstrzygnij sygnały BRAK DANYCH”, kluczowane treścią sygnału | Zapisywane po kliknięciu „Zastosuj” przy rozstrzyganiu sygnału |
+
+**Co się stanie bez tych plików:** aplikacja startuje z wbudowanymi wartościami
+domyślnymi (rezerwa 30%, rabaty 0%, brak podpowiedzi) — dokładnie jak wcześniej,
+zanim te pliki istniały. Uszkodzony/nieczytelny JSON jest traktowany identycznie
+jak brak pliku (nigdy nie wywala startu appki).
+
+**Ważne:** to WYŁĄCZNIE podpowiedzi w UI — `nauczone_decyzje_sygnalow.json`
+nigdy nie zmienia sygnału automatycznie, inżynier zawsze musi kliknąć
+„Zastosuj”. Zasada „nie zgadujemy” z `core/signal_rules.py`/`core/device_rules.py`
+zostaje nienaruszona.
 
 ---
 
@@ -158,4 +213,5 @@ formacie OFE_381).
 | `katalogi/*.csv` | Nie przy starcie, **TAK przy doborze PLC** | Tak |
 | `cennik.csv` | Nie (fallback na szablon) | Tak, do realnych cen |
 | `assets/fonts/*.ttf` | Nie (fallback na Helvetica) | Tak, do czytelnego PDF |
+| `ustawienia_sesji.json` / `nauczone_decyzje_sygnalow.json` | Nie (wygoda, nie funkcjonalność) | Nie |
 | Plik wejściowy (Excel) | Wgrywany ręcznie przez użytkownika | — |

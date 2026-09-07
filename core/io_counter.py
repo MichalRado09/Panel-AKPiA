@@ -32,9 +32,15 @@ class IOBalance:
     reserved: dict[str, int] = field(default_factory=lambda: {t: 0 for t in IO_TYPES})
     reserve_percent: int = 0
 
-    # Ile sygnałów pochodziło z jawnych kolumn, a ile z reguły typu urządzenia
+    # Skąd wzięły się sygnały - pełny rozkład do audytu:
+    #   kolumna        - wpisane jawnie w zestawieniu (najmocniejsze źródło),
+    #   typ_urzadzenia - z reguły typu urządzenia (do weryfikacji),
+    #   inzynier       - rozstrzygnięte ręcznie w interfejsie (sekcja 1b).
+    # "inzynier" musi tu być, inaczej sygnały rozstrzygnięte przez człowieka
+    # znikają z rozkładu źródeł i walidator liczy udział "wywnioskowanych"
+    # na zaniżonym mianowniku - czyli straszy bardziej, niż wynika z danych.
     source_counts: dict[str, int] = field(
-        default_factory=lambda: {"kolumna": 0, "typ_urzadzenia": 0}
+        default_factory=lambda: {"kolumna": 0, "typ_urzadzenia": 0, "inzynier": 0}
     )
     # Sygnały nierozstrzygnięte (BRAK DANYCH) - z ilością, do raportu
     undecided: list[dict] = field(default_factory=list)
@@ -98,7 +104,8 @@ def format_balance(bal: IOBalance) -> str:
     lines.append(f"  (rezerwa {bal.reserve_percent}%)")
     lines.append(
         f"  Źródło sygnałów: kolumny={bal.source_counts['kolumna']}, "
-        f"z typu urządzenia={bal.source_counts['typ_urzadzenia']}"
+        f"z typu urządzenia={bal.source_counts['typ_urzadzenia']}, "
+        f"rozstrzygnięte ręcznie={bal.source_counts.get('inzynier', 0)}"
     )
     if bal.undecided:
         lines.append(f"  BRAK DANYCH (do decyzji inżyniera): {len(bal.undecided)} sygnał(ów)")

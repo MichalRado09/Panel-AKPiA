@@ -1,7 +1,30 @@
-streamlit
-pandas
-openpyxl
-python-docx
-python-dotenv
-google-genai
-reportlab
+# Zależności Panelu Inżyniera AKPiA — wersje PRZYPIĘTE świadomie.
+#
+# DLACZEGO PINY, a nie same nazwy pakietów:
+# Wcześniej plik nie miał żadnych wersji, więc `pip install -r requirements.txt`
+# instalował to, co akurat było najnowsze w dniu wdrożenia. Realny skutek:
+# nowsza wersja Streamlit zmieniła zachowanie `"KLUCZ" in st.secrets` (zaczęła
+# rzucać wyjątkiem, gdy nie ma ŻADNEGO pliku secrets.toml) i aplikacja
+# wywalała się przy starcie w standardowym wdrożeniu z samym plikiem .env —
+# bez żadnej zmiany w naszym kodzie. Piny sprawiają, że świeża instalacja
+# u kogokolwiek daje dokładnie to samo, co przetestowane tutaj.
+#
+# JAK AKTUALIZOWAĆ (świadomie, nie przypadkiem):
+#   1. podnieś wersję w tym pliku,
+#   2. `pip install -r requirements.txt`,
+#   3. `python -m pytest tests/ -q`  (musi być zielone),
+#   4. uruchom `streamlit run app.py` i przeklikaj analizę na przykładowym pliku.
+#
+# Wersje poniżej: stan na 2026-09, na nich przechodzi pełny pakiet testów
+# oraz ręczny przebieg aplikacji (upload → bilans → dobór → raporty).
+
+streamlit==1.62.0
+pandas==3.0.5
+openpyxl==3.1.5
+python-docx==1.2.0
+python-dotenv==1.2.3
+google-genai==2.19.0
+reportlab==5.0.1
+
+# Do uruchomienia testów (nieużywane przez samą aplikację):
+#   pip install pytest

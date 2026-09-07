@@ -29,6 +29,10 @@ from dataclasses import dataclass, field
 # Typowe wielkości paneli HMI (do podpowiedzi w interfejsie — NIE reguła
 # automatycznego doboru, tylko lista ułatwiająca wybór inżynierowi).
 TYPOWE_PANELE = [
+    # Weintek 15.6" jako pierwszy, bo to JEDYNY panel potwierdzony w realnym
+    # projekcie firmy (DPK2 Wujek, lista materiałów PT.E-05-3-202, poz. 1.55).
+    # Reszta to typowe wielkości do wyboru, nie potwierdzone wdrożeniem.
+    "Weintek 15.6\" (jak DPK2 Wujek)",
     "Siemens SIMATIC KTP400 (4\")",
     "Siemens SIMATIC KTP700 (7\")",
     "Siemens SIMATIC KTP900 (9\")",

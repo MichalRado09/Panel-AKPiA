@@ -75,6 +75,19 @@ class Budget:
         return [it for it in self.items if it.cena_katalogowa is None]
 
 
+# Cache wczytanego cennika, kluczowany (ścieżka, mtime pliku) - Streamlit
+# przelicza cały skrypt przy KAŻDEJ interakcji UI (suwak, checkbox...), a
+# calculate_budget()/select_asix()/build_device_budget() wczytują cennik
+# za każdym razem od nowa, więc bez cache jeden rerender = kilka odczytów
+# tego samego pliku z dysku. Klucz po mtime (nie tylko ścieżce) gwarantuje,
+# że edycja cennik.csv w trakcie sesji jest widoczna od razu, bez potrzeby
+# restartu aplikacji - nowy mtime to inny klucz cache, stare wpisy dla tej
+# samej ścieżki są usuwane. Celowo bez st.cache_data: core/ ma zostać wolne
+# od zależności od Streamlit (patrz README) - to jest zwykły cache w pamięci
+# modułu, działa identycznie w testach i w CLI.
+_cennik_cache: dict[tuple[str, float], dict[str, dict]] = {}
+
+
 def load_cennik(filename: str = "cennik.csv") -> dict[str, dict]:
     """
     Wczytuje cennik z CSV. Zwraca dict: nr_katalogowy -> {nazwa, cena, waluta, grupa}.
@@ -93,6 +106,11 @@ def load_cennik(filename: str = "cennik.csv") -> dict[str, dict]:
         else:
             return {}
 
+    cache_key = (path, os.path.getmtime(path))
+    cached = _cennik_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     cennik: dict[str, dict] = {}
     with open(path, encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter=";")
@@ -110,6 +128,13 @@ def load_cennik(filename: str = "cennik.csv") -> dict[str, dict]:
                 "waluta": row.get("Waluta", "PLN").strip(),
                 "grupa": row.get("Grupa_Rabatowa", "").strip(),
             }
+
+    # Usuń tylko przestarzałe wpisy DLA TEJ SAMEJ ścieżki (inny mtime = plik
+    # edytowany w międzyczasie) - nie cały cache, żeby nie kasować wpisu dla
+    # drugiej możliwej ścieżki (cennik.csv / cennik_szablon.csv) niepotrzebnie.
+    for k in [k for k in _cennik_cache if k[0] == path]:
+        del _cennik_cache[k]
+    _cennik_cache[cache_key] = cennik
     return cennik
 
 

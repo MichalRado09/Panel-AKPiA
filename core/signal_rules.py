@@ -79,6 +79,20 @@ def _match_keyword(token: str, keywords: set[str]) -> bool:
 NO_DATA = "BRAK DANYCH"
 
 
+# Jednostka prądowa/napięciowa pętli pomiarowej (mA / mV) jako JEDNOSTKA,
+# nie jako dowolny podciąg. Wymagamy cyfry przed nią ("4-20mA", "20 mA"),
+# bo samo szukanie "ma" w tekście dopasowywało się do PRZYPADKOWYCH słów
+# i po cichu klasyfikowało je jako AI - zmierzone na realnych frazach:
+# "Automatyczna regulacja", "Sygnał z magistrali", "Manometr wskazujący"
+# (lokalny wskaźnik BEZ sygnału do PLC!), "Informacja z szafy", "Normalny
+# tryb". To zawyżało bilans AI, liczbę kart analogowych i kosztorys -
+# i łamało nadrzędną zasadę modułu: czego nie rozpoznajemy, tego NIE
+# zgadujemy, tylko oddajemy jako BRAK DANYCH do decyzji inżyniera.
+# Świadomie NIE dopuszczamy samotnego "ma": w polskim tekście to częste
+# słowo ("nie ma sygnału" znaczy dokładnie coś przeciwnego).
+_AI_UNIT_RE = re.compile(r"\d\s*m[av]\b")
+
+
 def classify_digital_phrase(phrase: str) -> list[dict]:
     """
     Rozbija słowny opis sygnałów cyfrowych na osobne sygnały z typem DI/DO.
@@ -165,11 +179,11 @@ def classify_analog_phrase(phrase: str) -> list[dict]:
 
     # 2) Heurystyka po treści
     ao_markers = ("zadawanie", "sterowanie", "nastaw", "predkosc", "regulacyjn")
-    ai_markers = ("4-20", "0-10", "rtd", "pt100", "pt-100", "pomiar", "ma", "mv")
+    ai_markers = ("4-20", "0-10", "rtd", "pt100", "pt-100", "pomiar")
 
     if any(m in token for m in ao_markers):
         return [{"nazwa": raw, "typ": "AO"}]
-    if any(m in token for m in ai_markers):
+    if any(m in token for m in ai_markers) or _AI_UNIT_RE.search(token):
         return [{"nazwa": raw, "typ": "AI"}]
 
     # 3) Nie wiemy - jawnie BRAK DANYCH (typ do decyzji inżyniera)

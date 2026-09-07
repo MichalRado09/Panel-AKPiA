@@ -31,16 +31,13 @@ Sugestia architektury (na podstawie skali projektu):
 from __future__ import annotations
 
 import math
-import csv
-import os
 from dataclasses import dataclass, field
+
+from .budget import load_cennik
 
 # Realne progi licencyjne ASIX (z cennika — sprawdzone, NIE MA 2048!)
 PROGI = [128, 256, 512, 1024, 4096, 8192]
 PROG_BEZ_LIMITU = "BEZ_LIMITU"
-
-# Cennik pliku CSV
-CENNIK_DIR = os.path.dirname(os.path.dirname(__file__))
 
 
 @dataclass
@@ -75,25 +72,12 @@ class AsixSelection:
 
 
 def _load_asix_prices() -> dict[str, dict]:
-    """Wczytuje ceny ASIX z cennika CSV. Fallback na szablon bez cen (patrz budget.load_cennik)."""
-    path = os.path.join(CENNIK_DIR, "cennik.csv")
-    if not os.path.exists(path):
-        template = os.path.join(CENNIK_DIR, "cennik_szablon.csv")
-        if os.path.exists(template):
-            path = template
-        else:
-            return {}
-    prices: dict[str, dict] = {}
-    with open(path, encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter=";")
-        for row in reader:
-            nr = row.get("Nr_katalogowy", "").strip()
-            try:
-                cena = float(row.get("Cena_Katalogowa", "0"))
-            except (ValueError, TypeError):
-                cena = None
-            prices[nr] = {"nazwa": row.get("Nazwa", ""), "cena": cena}
-    return prices
+    """
+    Ceny ASIX to te same wiersze cennika co reszta aplikacji - deleguje do
+    budget.load_cennik() (ma już fallback na szablon bez cen i cache po
+    mtime pliku), zamiast duplikować identyczną logikę wczytywania CSV.
+    """
+    return load_cennik()
 
 
 def _find_prog(zmienne: int) -> tuple[int, str]:

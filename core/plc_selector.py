@@ -44,6 +44,11 @@ class PlcItem:
     ilosc: int
     typ: str = ""
     grupa_rabatowa: str = ""
+    # Oryginalny klucz z katalogu CSV (CPU/LICENSE/SERIAL/ETH/SDCARD/DI/DO/AI/AO/...).
+    # Potrzebny tam, gdzie liczy się KONKRETNA rola pozycji (np. cabinet.py
+    # szuka CPU do bilansu prądowego) - `typ` sam w sobie tego nie rozróżnia,
+    # bo dla pozycji "systemowy" (CPU/LICENSE/ETH/SDCARD) jest wspólny.
+    katalog_typ: str = ""
 
 
 @dataclass
@@ -59,6 +64,14 @@ class PlcSelection:
         return sum(i.ilosc for i in self.items if i.typ in ("io", "SERIAL"))
 
 
+# Cache katalogów kart, kluczowany (ścieżka, mtime) - patrz analogiczny
+# komentarz przy core/budget.py::_cennik_cache. compare_variants() woła
+# select_plc() dla WSZYSTKICH platform pod rząd, więc kasujemy tu tylko
+# przestarzałe wpisy DLA TEJ SAMEJ ścieżki, nie cały cache - inaczej
+# wczytanie kolejnej platformy usuwałoby katalog poprzedniej.
+_catalog_cache: dict[tuple[str, float], dict] = {}
+
+
 def load_catalog(platforma: str) -> dict:
     """
     Wczytuje katalog kart platformy z CSV.
@@ -72,6 +85,11 @@ def load_catalog(platforma: str) -> dict:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Brak pliku katalogu: {path}")
 
+    cache_key = (path, os.path.getmtime(path))
+    cached = _catalog_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     catalog: dict[str, dict] = {}
     with open(path, encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter=";")
@@ -84,8 +102,28 @@ def load_catalog(platforma: str) -> dict:
                 "kanaly": int(kanaly) if kanaly else None,
                 "rola": row.get("rola", "").strip(),
                 "grupa_rabatowa": row.get("grupa_rabatowa", "").strip(),
+                # Bilans prądu magistrali E-bus (Beckhoff). Puste = brak danych,
+                # wtedy dobór zasilacza magistrali spada na regułę zastępczą
+                # opartą na liczbie modułów - patrz _add_platform_extras().
+                "pobor_ebus_ma": _int_lub_none(row.get("pobor_ebus_ma")),
+                "zasila_ebus_ma": _int_lub_none(row.get("zasila_ebus_ma")),
             }
+
+    for k in [k for k in _catalog_cache if k[0] == path]:
+        del _catalog_cache[k]
+    _catalog_cache[cache_key] = catalog
     return catalog
+
+
+def _int_lub_none(raw) -> int | None:
+    """Pusta komórka w CSV = brak danych (None), nie zero."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        return int(float(s.replace(",", ".")))
+    except ValueError:
+        return None
 
 
 def _cards_needed(channels_required: int, channels_per_card: int) -> int:
@@ -113,6 +151,7 @@ def select_plc(balance, platforma: str, use_serial_if: bool = True) -> PlcSelect
                 nr=c["nr"], opis=c["opis"], ilosc=ilosc,
                 typ=c["rola"] if typ not in IO_TYPES else "io",
                 grupa_rabatowa=c["grupa_rabatowa"],
+                katalog_typ=typ,
             ))
 
     # 1) Elementy systemowe zawsze obecne (CPU, ETH, licencja, karta SD...)
@@ -123,7 +162,7 @@ def select_plc(balance, platforma: str, use_serial_if: bool = True) -> PlcSelect
     if use_serial_if and "SERIAL" in catalog:
         c = catalog["SERIAL"]
         sel.items.append(PlcItem(c["nr"], c["opis"], 1, typ="SERIAL",
-                                 grupa_rabatowa=c["grupa_rabatowa"]))
+                                 grupa_rabatowa=c["grupa_rabatowa"], katalog_typ="SERIAL"))
 
     # 3) Karty I/O - liczba wg zapotrzebowania po rezerwie
     for t in IO_TYPES:
@@ -147,21 +186,91 @@ def select_plc(balance, platforma: str, use_serial_if: bool = True) -> PlcSelect
     return sel
 
 
+def _dobierz_zasilacze_ebus(sel: PlcSelection, catalog: dict,
+                            n_modules: int) -> tuple[int, str]:
+    """
+    Liczba zasilaczy magistrali E-bus (Beckhoff EL9410) z BILANSU PRĄDU, a nie
+    z liczby modułów. Zwraca (liczba_sztuk, uwaga_do_wyświetlenia).
+
+    DLACZEGO NIE PO LICZBIE MODUŁÓW: poprzednia reguła "co 12 modułów" dawała
+    na projekcie referencyjnym DPK2 Wujek 2 sztuki, podczas gdy realna listwa
+    (rysunek PT.E-05-3-404) ma ich DOKŁADNIE JEDNĄ. Sam rysunek pokazuje, że
+    premisa była fałszywa: EL9410 stoi na pozycji -A14, czyli po 12 terminalach,
+    ale ZA NIM jest jeszcze 14 kolejnych bez drugiego zasilacza. Gdyby limit
+    naprawdę wynosił 12 modułów, ten drugi odcinek też by go wymagał.
+
+    Fizycznie decyduje pobór prądu magistrali: CPU zasila E-bus określonym
+    prądem, EL9410 dokłada kolejną porcję, a każdy typ karty pobiera inaczej
+    (analogowe wyraźnie więcej niż cyfrowe). Liczymy więc deficyt i dzielimy
+    przez wydajność zasilacza.
+
+    Wartości poboru pochodzą z kolumn `pobor_ebus_ma` / `zasila_ebus_ma`
+    w katalogu CSV. Są to TYPOWE wartości katalogowe, nie odczyty z kart
+    konkretnych egzemplarzy - dlatego wynik zawsze niesie ze sobą uwagę.
+    Reguła w tej postaci ODTWARZA projekt referencyjny (Wujek: 1 szt.).
+
+    Brak danych w katalogu -> awaryjnie stara reguła "co 12 modułów"
+    z wyraźnym ostrzeżeniem, że to zgrubny szacunek.
+    """
+    cpu = catalog.get("CPU", {})
+    psu = catalog.get("BUSPSU", {})
+    zasila_cpu = cpu.get("zasila_ebus_ma")
+    zasila_psu = psu.get("zasila_ebus_ma")
+
+    # Pobór wszystkiego, co faktycznie siedzi na magistrali E-bus.
+    pobor_total = 0
+    brakuje_danych = []
+    for it in sel.items:
+        c = catalog.get(it.katalog_typ)
+        if not c or it.katalog_typ in ("CPU", "BUSPSU"):
+            continue
+        p = c.get("pobor_ebus_ma")
+        if p is None:
+            brakuje_danych.append(it.nr)
+        else:
+            pobor_total += p * it.ilosc
+
+    if brakuje_danych or not zasila_cpu or not zasila_psu:
+        n_psu = max(0, (n_modules - 1) // 12)
+        if n_psu <= 0:
+            return 0, ""
+        return n_psu, (
+            f"Zasilacz magistrali E-bus ({psu.get('nr', '?')}): {n_psu} szt. to "
+            f"ZGRUBNY SZACUNEK wg liczby modułów - w katalogu brakuje poboru "
+            f"E-bus dla: {', '.join(brakuje_danych) or 'CPU/zasilacza'}. "
+            f"Uzupełnij kolumny pobor_ebus_ma / zasila_ebus_ma, żeby liczyć "
+            f"z bilansu prądu magistrali."
+        )
+
+    deficyt = pobor_total - zasila_cpu
+    if deficyt <= 0:
+        return 0, ""
+    n_psu = math.ceil(deficyt / zasila_psu)
+    return n_psu, (
+        f"Zasilacz magistrali E-bus: {n_psu} szt. z bilansu prądu "
+        f"({pobor_total} mA poboru wobec {zasila_cpu} mA z CPU, zasilacz dokłada "
+        f"{zasila_psu} mA). Pobory to TYPOWE wartości katalogowe z katalogi/*.csv - "
+        f"przy krytycznych konfiguracjach sprawdź karty katalogowe kart."
+    )
+
+
 def _add_platform_extras(sel: PlcSelection, catalog: dict) -> None:
     """Dokłada elementy montażowe specyficzne dla platformy."""
     n_modules = sel.modules_on_rail
 
-    # Beckhoff: zasilacz E-bus co 12 terminali + pokrywa końcowa
+    # Beckhoff: zasilacz E-bus + pokrywa końcowa
     if "BUSPSU" in catalog:
-        n_psu = max(0, (n_modules - 1) // 12)
+        n_psu, uwaga = _dobierz_zasilacze_ebus(sel, catalog, n_modules)
         if n_psu > 0:
             c = catalog["BUSPSU"]
             sel.items.append(PlcItem(c["nr"], c["opis"], n_psu, typ="montaz",
-                                     grupa_rabatowa=c["grupa_rabatowa"]))
+                                     grupa_rabatowa=c["grupa_rabatowa"], katalog_typ="BUSPSU"))
+        if uwaga:
+            sel.warnings.append(uwaga)
     if "ENDCAP" in catalog:
         c = catalog["ENDCAP"]
         sel.items.append(PlcItem(c["nr"], c["opis"], 1, typ="montaz",
-                                 grupa_rabatowa=c["grupa_rabatowa"]))
+                                 grupa_rabatowa=c["grupa_rabatowa"], katalog_typ="ENDCAP"))
 
     # Siemens ET200SP: BaseUnit dla każdego modułu (1 jasny + reszta ciemne)
     #                  + Bus Adapter (interfejs do CPU)
@@ -170,15 +279,15 @@ def _add_platform_extras(sel: PlcSelection, catalog: dict) -> None:
             cl = catalog["BASEUNIT_LIGHT"]
             cd = catalog["BASEUNIT_DARK"]
             sel.items.append(PlcItem(cl["nr"], cl["opis"], 1, typ="montaz",
-                                     grupa_rabatowa=cl["grupa_rabatowa"]))
+                                     grupa_rabatowa=cl["grupa_rabatowa"], katalog_typ="BASEUNIT_LIGHT"))
             if n_modules > 1:
                 sel.items.append(PlcItem(cd["nr"], cd["opis"], n_modules - 1, typ="montaz",
-                                         grupa_rabatowa=cd["grupa_rabatowa"]))
+                                         grupa_rabatowa=cd["grupa_rabatowa"], katalog_typ="BASEUNIT_DARK"))
     if "BUSADAPTER" in catalog:
         c = catalog["BUSADAPTER"]
         # Bus Adapter: zwykle 1-2 (redundancja portów). Przyjmujemy 1 na stację.
         sel.items.append(PlcItem(c["nr"], c["opis"], 1, typ="montaz",
-                                 grupa_rabatowa=c["grupa_rabatowa"]))
+                                 grupa_rabatowa=c["grupa_rabatowa"], katalog_typ="BUSADAPTER"))
 
 
 def format_selection(sel: PlcSelection) -> str:
