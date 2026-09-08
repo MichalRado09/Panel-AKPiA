@@ -56,6 +56,68 @@ ZASILACZE = [5, 10, 20, 40]
 ZAPAS_ZASILACZA = 1.30
 
 
+# =============================================================================
+# KOMPLETNA ROZDZIELNICA — obudowa, korytka, szyny, okablowanie, zabezpieczenia
+# =============================================================================
+# Dotąd dobór kończył się na złączkach, przekaźnikach i zasilaczu, więc
+# „wyposażenie szafy" nie było wyceną rozdzielnicy — brakowało w niej samej
+# obudowy, czyli zwykle najdroższej pojedynczej pozycji.
+#
+# STATUS TYCH REGUŁ — INNY NIŻ ZŁĄCZEK. Współczynniki złączek wyżej są
+# wyprowadzone z realnego BOM-u (Wujek) i zwalidowane na drugim projekcie
+# (Niwka). Reguły poniżej takiej walidacji NIE MAJĄ: opierają się na
+# szerokościach aparatów na szynie TH35 i na typowej praktyce montażowej.
+# Dają rozsądny punkt wyjścia i pilnują, żeby pozycja nie wypadła z oferty —
+# ale rozmiar obudowy i skład zabezpieczeń zatwierdza projektant.
+# Wynik zawsze niesie ze sobą ostrzeżenie o tym rozróżnieniu.
+
+# Szerokość zabudowy na szynie TH35 [mm]. Wartości katalogowe/typowe.
+SZEROKOSCI_MM = {
+    "PT 2,5": 5.2,
+    "PT 2,5-PE": 5.2,
+    "PT 4-HESI (5X20)": 6.2,
+    "RIF": 6.2,
+    "wylacznik_1P_N": 36.0,      # nadprądowy 1P+N = 2 moduły po 18 mm
+    "rozlacznik_glowny": 54.0,   # rozłącznik główny 3P = 3 moduły
+}
+
+# Moduły sterownika — szerokość zależy od platformy, więc bierzemy wartości
+# typowe: CPU/Embedded PC jest wyraźnie szerszy od pojedynczego terminala.
+SZEROKOSC_CPU_MM = 110.0
+SZEROKOSC_MODULU_MM = 20.0
+
+# Zasilacz 24V DC: szerokość rośnie z prądem [A -> mm].
+SZEROKOSC_ZASILACZA_MM = {5: 40.0, 10: 65.0, 20: 85.0, 40: 125.0}
+
+# Zapas miejsca na szynie (na rezerwę montażową i rozdzielenie potencjałów).
+ZAPAS_SZYNY = 1.20
+
+# Katalog obudów: (nazwa, użyteczna długość szyny w rzędzie [mm], liczba rzędów).
+# Pojemność = długość x rzędy. Kolejność od najmniejszej — dobieramy pierwszą,
+# która się mieści.
+OBUDOWY = [
+    ("Obudowa wisząca 600x600x250",    500.0, 3),
+    ("Obudowa wisząca 600x800x250",    500.0, 4),
+    ("Obudowa wisząca 800x1000x300",   700.0, 5),
+    ("Obudowa wisząca 800x1200x300",   700.0, 6),
+    ("Obudowa stojąca 800x2000x400",   700.0, 10),
+    ("Obudowa stojąca 1000x2000x400",  900.0, 10),
+]
+
+# Korytko grzebieniowe: prowadzone nad i pod każdym rzędem aparatury,
+# stąd mnożnik 2 względem długości szyn.
+KORYTKO_NA_SZYNE = 2.0
+
+# Okablowanie wewnętrzne [m]:
+#   - LgY 1,0 — od złączek do modułów, ~0,8 m na złączkę sygnałową,
+#   - LgY 2,5 — obwody 230V i zasilacza, ryczałt na szafę.
+PRZEWOD_LGY1_NA_ZLACZKE_M = 0.8
+PRZEWOD_LGY25_RYCZALT_M = 15.0
+
+# Wentylacja wymuszona od tego poboru wzwyż [A]; poniżej chłodzenie naturalne.
+PROG_WENTYLACJI_A = 5.0
+
+
 @dataclass
 class CabinetItem:
     """Pozycja wyposażenia szafy."""
@@ -72,6 +134,11 @@ class CabinetSelection:
     """Wynik doboru wyposażenia szafy."""
     items: list[CabinetItem] = field(default_factory=list)
 
+    # Zabudowa szafy
+    dlugosc_szyn_mm: float = 0.0   # suma szerokości aparatów + zapas
+    obudowa: str = ""              # dobrana obudowa
+    obudowa_rzedow: int = 0        # ile rzędów szyny wykorzystuje
+
     # Bilans prądowy
     prad_karty_ma: int = 0
     prad_przekazniki_ma: int = 0
@@ -87,12 +154,17 @@ class CabinetSelection:
         return sum(it.ilosc for it in self.items if "PT " in it.nr_katalogowy)
 
 
-def select_cabinet(balance, plc_selection=None) -> CabinetSelection:
+def select_cabinet(balance, plc_selection=None,
+                   pelna_rozdzielnica: bool = True) -> CabinetSelection:
     """
     Dobiera wyposażenie szafy na podstawie bilansu I/O i (opcjonalnie) doboru PLC.
 
     balance: IOBalance z io_counter (używamy .reserved).
     plc_selection: PlcSelection z plc_selector — do bilansu prądowego kart.
+    pelna_rozdzielnica: czy dołożyć obudowę, korytka, szynę, okablowanie
+        wewnętrzne i zabezpieczenia (domyślnie tak). Wyłączenie zostawia samą
+        aparaturę na szynie — przydatne, gdy rozdzielnicę wycenia ktoś inny
+        albo szafa jest już na obiekcie i dokładamy tylko aparaturę.
     """
     sel = CabinetSelection()
     r = balance.reserved
@@ -184,7 +256,166 @@ def select_cabinet(balance, plc_selection=None) -> CabinetSelection:
         "traktować jako oszacowanie, wymaga weryfikacji projektanta."
     )
 
+    # Obudowa, korytka, szyna, okablowanie, zabezpieczenia — dopiero z nimi
+    # to jest wycena rozdzielnicy, a nie sama lista aparatów.
+    # WOŁANE NA KOŃCU, bo dobór obudowy potrzebuje już policzonego zasilacza
+    # (jego szerokość wchodzi do zabudowy) i bilansu prądowego (wentylacja).
+    if pelna_rozdzielnica:
+        _dodaj_rozdzielnice(sel, plc_selection)
+
     return sel
+
+
+def _szerokosc_aparatury_mm(sel: CabinetSelection, plc_selection) -> float:
+    """
+    Suma szerokości wszystkiego, co siedzi na szynie TH35 — złączek,
+    przekaźników, zasilacza, modułów sterownika i zabezpieczeń.
+
+    To jest jedyna wielkość, z której da się sensownie wyprowadzić rozmiar
+    obudowy i metraż korytek: liczba sygnałów sama w sobie nic nie mówi
+    o zabudowie, bo złączka analogowa z bezpiecznikiem zajmuje inaczej niż
+    przekaźnik, a Embedded PC inaczej niż terminal wejść.
+    """
+    szer = 0.0
+    for it in sel.items:
+        if it.nr_katalogowy in SZEROKOSCI_MM:
+            szer += SZEROKOSCI_MM[it.nr_katalogowy] * it.ilosc
+        elif it.nr_katalogowy.startswith("RIF-1"):
+            szer += SZEROKOSCI_MM["RIF"] * it.ilosc
+
+    if sel.zasilacz_a:
+        szer += SZEROKOSC_ZASILACZA_MM.get(sel.zasilacz_a, 90.0)
+
+    if plc_selection is not None:
+        for it in plc_selection.items:
+            if getattr(it, "katalog_typ", "") == "CPU":
+                szer += SZEROKOSC_CPU_MM * it.ilosc
+            elif getattr(it, "typ", "") in ("io", "SERIAL", "montaz"):
+                szer += SZEROKOSC_MODULU_MM * it.ilosc
+
+    # Zabezpieczenia dokładane niżej — doliczamy je do zabudowy z góry,
+    # żeby obudowa była dobrana do KOMPLETU, a nie do stanu sprzed ich dodania.
+    szer += SZEROKOSCI_MM["rozlacznik_glowny"] + 2 * SZEROKOSCI_MM["wylacznik_1P_N"]
+
+    return szer
+
+
+def _dobierz_obudowe(dlugosc_mm: float) -> tuple[str, int, int]:
+    """
+    Najmniejsza obudowa z katalogu, w której zmieści się zabudowa.
+    Zwraca (nazwa, liczba_potrzebnych_rzedow, pojemnosc_mm).
+
+    Przekroczenie największej obudowy nie jest błędem — to sygnał, że
+    rozdzielnica idzie na dwa pola. Zwracamy wtedy największą pozycję,
+    a select_cabinet dokłada ostrzeżenie.
+    """
+    for nazwa, dlugosc_rzedu, rzedow in OBUDOWY:
+        pojemnosc = dlugosc_rzedu * rzedow
+        if dlugosc_mm <= pojemnosc:
+            return nazwa, math.ceil(dlugosc_mm / dlugosc_rzedu), int(pojemnosc)
+    nazwa, dlugosc_rzedu, rzedow = OBUDOWY[-1]
+    return nazwa, rzedow, int(dlugosc_rzedu * rzedow)
+
+
+def _dodaj_rozdzielnice(sel: CabinetSelection, plc_selection) -> None:
+    """
+    Dokłada to, co odróżnia listę aparatów od wyceny KOMPLETNEJ rozdzielnicy:
+    obudowę, korytka, szynę, okablowanie wewnętrzne, zabezpieczenia
+    i wyposażenie obudowy.
+
+    Bez tych pozycji oferta była systematycznie zaniżona — i to nie o drobiazg,
+    bo brakowało w niej samej obudowy.
+    """
+    szer_mm = _szerokosc_aparatury_mm(sel, plc_selection)
+    sel.dlugosc_szyn_mm = round(szer_mm * ZAPAS_SZYNY, 1)
+
+    nazwa, rzedow, pojemnosc = _dobierz_obudowe(sel.dlugosc_szyn_mm)
+    sel.obudowa = nazwa
+    sel.obudowa_rzedow = rzedow
+    sel.items.append(CabinetItem(
+        nazwa, "Obudowa rozdzielnicy z płytą montażową", 1,
+        grupa_rabatowa="OBUDOWY",
+        uwaga=f"zabudowa {sel.dlugosc_szyn_mm:.0f} mm (z zapasem "
+              f"{int((ZAPAS_SZYNY - 1) * 100)}%) w {rzedow} rzędach",
+    ))
+    if sel.dlugosc_szyn_mm > pojemnosc:
+        sel.warnings.append(
+            f"Zabudowa {sel.dlugosc_szyn_mm:.0f} mm przekracza pojemność największej "
+            f"obudowy w katalogu ({pojemnosc} mm) — rozdzielnica wymaga drugiego pola. "
+            f"Wyceniono jedną obudowę; podziel projekt lub dopisz większą pozycję "
+            f"do OBUDOWY w core/cabinet.py."
+        )
+
+    dlugosc_m = sel.dlugosc_szyn_mm / 1000.0
+
+    sel.items.append(CabinetItem(
+        "Szyna montażowa TH35", "Szyna montażowa TH35 (DIN)",
+        math.ceil(dlugosc_m), jednostka="m", grupa_rabatowa="OBUDOWY",
+        uwaga="długość zabudowy",
+    ))
+    sel.items.append(CabinetItem(
+        "Korytko grzebieniowe 40x60", "Korytko grzebieniowe (prowadzenie przewodów)",
+        math.ceil(dlugosc_m * KORYTKO_NA_SZYNE), jednostka="m", grupa_rabatowa="OBUDOWY",
+        uwaga=f"{KORYTKO_NA_SZYNE:g}x długość szyn (korytko nad i pod rzędem)",
+    ))
+
+    # --- Okablowanie wewnętrzne ---
+    n_zlaczek = sel.total_zlaczki
+    if n_zlaczek > 0:
+        sel.items.append(CabinetItem(
+            "Przewód LgY 1,0 mm2", "Przewód wewnętrzny LgY 1,0 mm2 (obwody sygnałowe)",
+            math.ceil(n_zlaczek * PRZEWOD_LGY1_NA_ZLACZKE_M), jednostka="m",
+            grupa_rabatowa="KABLE",
+            uwaga=f"{PRZEWOD_LGY1_NA_ZLACZKE_M} m na złączkę",
+        ))
+    sel.items.append(CabinetItem(
+        "Przewód LgY 2,5 mm2", "Przewód wewnętrzny LgY 2,5 mm2 (obwody 230V i zasilacza)",
+        int(PRZEWOD_LGY25_RYCZALT_M), jednostka="m", grupa_rabatowa="KABLE",
+        uwaga="ryczałt na szafę",
+    ))
+
+    # --- Zabezpieczenia ---
+    sel.items.append(CabinetItem(
+        "Rozłącznik główny 3P 25A", "Rozłącznik główny z napędem drzwiowym", 1,
+        uwaga="1 na rozdzielnicę",
+    ))
+    sel.items.append(CabinetItem(
+        "Wyłącznik nadprądowy B10 1P+N", "Zabezpieczenie obwodu zasilacza 24V DC", 1,
+        uwaga="obwód zasilacza",
+    ))
+    sel.items.append(CabinetItem(
+        "Wyłącznik nadprądowy B10 1P+N (gniazdo/oświetlenie)",
+        "Zabezpieczenie gniazda serwisowego i oświetlenia szafy", 1,
+        uwaga="obwód pomocniczy",
+    ))
+
+    # --- Wyposażenie obudowy ---
+    sel.items.append(CabinetItem(
+        "Oświetlenie szafy z wyłącznikiem drzwiowym",
+        "Oprawa oświetleniowa szafy z wyłącznikiem drzwiowym", 1,
+    ))
+    sel.items.append(CabinetItem(
+        "Gniazdo serwisowe 230V", "Gniazdo serwisowe 230V na szynę TH35", 1,
+    ))
+    if sel.prad_z_zapasem_a >= PROG_WENTYLACJI_A:
+        sel.items.append(CabinetItem(
+            "Wentylator z filtrem + termostat",
+            "Wentylacja wymuszona z termostatem", 1,
+            uwaga=f"pobór {sel.prad_z_zapasem_a} A >= {PROG_WENTYLACJI_A} A",
+        ))
+    else:
+        sel.warnings.append(
+            f"Przyjęto chłodzenie naturalne (pobór {sel.prad_z_zapasem_a} A poniżej "
+            f"progu {PROG_WENTYLACJI_A} A). Przy szafie w gorącym pomieszczeniu "
+            f"dolicz wentylację ręcznie."
+        )
+
+    sel.warnings.append(
+        "Obudowa, korytka, okablowanie i zabezpieczenia to OSZACOWANIE z sumy "
+        "szerokości aparatów na szynie, a nie reguła zwalidowana na projekcie "
+        "referencyjnym (w odróżnieniu od liczby złączek i przekaźników). "
+        "Rozmiar obudowy i skład zabezpieczeń zatwierdza projektant."
+    )
 
 
 def format_cabinet(sel: CabinetSelection) -> str:

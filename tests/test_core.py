@@ -335,6 +335,62 @@ def test_selector_cx7000_tom():
     assert m["CX7000"] == 1
 
 
+# --- Siemens S7-1500 (dołożona na prośbę inżyniera) ---------------------------
+
+def test_katalog_s7_1500_wczytuje():
+    cat = load_catalog("Siemens S7-1500")
+    assert cat["CPU"]["nr"] == "6ES7513-1AL02-0AB0"
+    assert cat["DI"]["kanaly"] == 32
+    assert cat["DO"]["kanaly"] == 32
+    assert cat["AI"]["kanaly"] == 8
+    assert cat["AO"]["kanaly"] == 4
+
+
+def test_selector_s7_1500_zlacza_czolowe_na_kazda_karte_io():
+    """
+    S7-1500 nie ma BaseUnitów (to specyfika ET200SP), ale KAŻDA karta I/O
+    wymaga osobnego złącza czołowego - w katalogu Siemensa jest to oddzielna
+    pozycja zamówieniowa, więc jej pominięcie zaniżałoby ofertę o tyle sztuk,
+    ile jest kart.
+
+    Moduł komunikacyjny CM PtP ma własne gniazdo sub-D i złącza czołowego NIE
+    potrzebuje - dlatego liczymy po kartach I/O, nie po modułach na szynie.
+    """
+    sel = select_plc(_mk_balance(80, 24, 56, 16), "Siemens S7-1500")
+    m = {it.nr: it.ilosc for it in sel.items}
+    # 80/32 -> 3 DI, 24/32 -> 1 DO, 56/8 -> 7 AI, 16/4 -> 4 AO = 15 kart I/O
+    assert m["6ES7521-1BL00-0AB0"] == 3
+    assert m["6ES7522-1BL01-0AB0"] == 1
+    assert m["6ES7531-7KF00-0AB0"] == 7
+    assert m["6ES7532-5HD00-0AB0"] == 4
+    assert m["6ES7592-1BM00-0XB0"] == 15   # złącza czołowe = karty I/O
+    assert sel.modules_on_rail == 16       # ...a na szynie jest jeszcze CM PtP
+    assert m["6ES7590-1AE80-0AA0"] == 1    # szyna profilowa: 1 na stację
+
+
+def test_selector_s7_1500_ma_zasilacz_systemowy():
+    """
+    Zasilacz systemowy PM 1507 to osobna pozycja, której platformy Beckhoffa
+    nie mają (CX ma zasilanie w obudowie). Regresja na wypadek, gdyby ktoś
+    zawęził listę pozycji systemowych w select_plc().
+    """
+    sel = select_plc(_mk_balance(8, 8, 8, 4), "Siemens S7-1500")
+    assert any(it.katalog_typ == "SYSPSU" for it in sel.items)
+
+
+def test_selector_s7_1500_ostrzega_o_pochodzeniu_katalogu():
+    """
+    Beckhoff CX9020 i ET200SP odtworzono z realnych projektów wykonawczych,
+    S7-1500 nie - i to musi być widać w WYNIKU doboru, nie tylko w komentarzu
+    w kodzie, bo z tego wyniku powstaje oferta dla klienta.
+    """
+    sel = select_plc(_mk_balance(8, 8, 8, 4), "Siemens S7-1500")
+    assert any("TYPOWA konfiguracja" in w for w in sel.warnings)
+
+    bez_uwagi = select_plc(_mk_balance(8, 8, 8, 4), "Beckhoff CX9020")
+    assert not any("TYPOWA konfiguracja" in w for w in bez_uwagi.warnings)
+
+
 # --- budget: kalkulacja cen netto --------------------------------------------
 
 from core.budget import calculate_budget, _round_netto, load_cennik
@@ -405,6 +461,108 @@ def test_cabinet_zasilacz_wujek():
     assert cab.prad_total_ma > 0
 
 
+def test_cabinet_kompletna_rozdzielnica_ma_obudowe_i_reszte():
+    """
+    Uwaga 5 z testów przełożonego: „lista elementów szafy ogranicza się do
+    złączek, przekaźników, zasilaczy - czy dałoby się dodać obudowę, korytka
+    grzebieniowe, okablowanie, wyłączniki/rozłączniki".
+
+    Bez tych pozycji oferta była zaniżona nie o drobiazg, tylko o SAMĄ OBUDOWĘ.
+    """
+    bal = IOBalance()
+    bal.reserved = {"DI": 80, "DO": 24, "AI": 56, "AO": 16}
+    bal.base = dict(bal.reserved)
+    plc = select_plc(bal, "Beckhoff CX9020")
+    cab = select_cabinet(bal, plc)
+    nazwy = " | ".join(it.nr_katalogowy for it in cab.items)
+
+    assert "Obudowa" in nazwy
+    assert "Korytko grzebieniowe" in nazwy
+    assert "Szyna montażowa TH35" in nazwy
+    assert "Przewód LgY" in nazwy
+    assert "Rozłącznik główny" in nazwy
+    assert "Wyłącznik nadprądowy" in nazwy
+    assert "Gniazdo serwisowe" in nazwy
+    assert cab.obudowa and cab.dlugosc_szyn_mm > 0
+
+
+def test_cabinet_obudowa_rosnie_z_wielkoscia_projektu():
+    """
+    Obudowa ma wynikać z ZABUDOWY (sumy szerokości aparatów), a nie być stała.
+    Mały węzeł i duży węzeł nie mogą dostać tej samej szafy.
+    """
+    def _zabudowa(di, do, ai, ao):
+        bal = IOBalance()
+        bal.reserved = {"DI": di, "DO": do, "AI": ai, "AO": ao}
+        bal.base = dict(bal.reserved)
+        cab = select_cabinet(bal, select_plc(bal, "Beckhoff CX9020"))
+        return cab.dlugosc_szyn_mm, cab.obudowa
+
+    maly_mm, maly_obud = _zabudowa(8, 8, 4, 2)
+    duzy_mm, duzy_obud = _zabudowa(160, 48, 112, 32)
+    assert maly_mm < duzy_mm
+    assert maly_obud != duzy_obud
+
+
+def test_cabinet_obudowa_uwzglednia_moduly_sterownika():
+    """
+    Zabudowa musi rosnąć także od strony sterownika, nie tylko złączek —
+    inaczej szafa z rozbudowaną listwą PLC byłaby dobrana za mała.
+    """
+    bal = IOBalance()
+    bal.reserved = {"DI": 80, "DO": 24, "AI": 56, "AO": 16}
+    bal.base = dict(bal.reserved)
+    plc = select_plc(bal, "Beckhoff CX9020")
+    z_plc = select_cabinet(bal, plc).dlugosc_szyn_mm
+    bez_plc = select_cabinet(bal, None).dlugosc_szyn_mm
+    assert z_plc > bez_plc
+
+
+def test_cabinet_grupy_rabatowe_rozdzielone():
+    """
+    Obudowa i korytka przychodzą od innego dostawcy niż aparatura na szynę,
+    więc muszą mieć własną grupę rabatową - inaczej obudowa byłaby liczona
+    rabatem wynegocjowanym u dostawcy złączek.
+    """
+    from core.budget import GRUPY_RABATOWE
+    bal = IOBalance()
+    bal.reserved = {"DI": 16, "DO": 8, "AI": 8, "AO": 4}
+    bal.base = dict(bal.reserved)
+    cab = select_cabinet(bal, select_plc(bal, "Beckhoff CX9020"))
+    grupy = {it.grupa_rabatowa for it in cab.items}
+    assert "OBUDOWY" in grupy
+    assert grupy <= set(GRUPY_RABATOWE), f"nieznana grupa rabatowa: {grupy}"
+
+
+def test_cabinet_mozna_wylaczyc_rozdzielnice():
+    """
+    Gdy rozdzielnicę wycenia ktoś inny (albo szafa jest już na obiekcie),
+    dobór ma zostawić samą aparaturę - bez obudowy i korytek.
+    """
+    bal = IOBalance()
+    bal.reserved = {"DI": 16, "DO": 8, "AI": 8, "AO": 4}
+    bal.base = dict(bal.reserved)
+    cab = select_cabinet(bal, select_plc(bal, "Beckhoff CX9020"),
+                         pelna_rozdzielnica=False)
+    assert not any("Obudowa" in it.nr_katalogowy for it in cab.items)
+    assert cab.obudowa == ""
+    # ...ale aparatura i zasilacz zostają
+    assert any("PT 2,5" == it.nr_katalogowy for it in cab.items)
+    assert cab.zasilacz_a > 0
+
+
+def test_cabinet_rozdzielnica_zawsze_oznaczona_jako_oszacowanie():
+    """
+    Reguły złączek są zwalidowane na dwóch realnych projektach, reguły obudowy
+    NIE SĄ. Ta różnica musi być widoczna w wyniku - z niego powstaje oferta.
+    """
+    bal = IOBalance()
+    bal.reserved = {"DI": 16, "DO": 8, "AI": 8, "AO": 4}
+    bal.base = dict(bal.reserved)
+    cab = select_cabinet(bal, select_plc(bal, "Beckhoff CX9020"))
+    assert any("OSZACOWANIE" in w for w in cab.warnings)
+
+
 def test_cabinet_bez_plc_ostrzega():
     bal = IOBalance()
     bal.reserved = {"DI": 8, "DO": 0, "AI": 0, "AO": 0}
@@ -453,6 +611,131 @@ def test_asix_dobor_pakietu():
     assert sel.zmienne_io == 176
     assert sel.zmienne_obliczone == 212  # ceil(176*1.2)
     assert sel.prog_licencyjny == 256    # najbliższy wyższy próg
+
+
+# --- scada_asix: architektura jako decyzja inżyniera, nie aplikacji -----------
+
+def _bal_asix(di=80, do=24, ai=56, ao=16):
+    bal = IOBalance()
+    bal.reserved = {"DI": di, "DO": do, "AI": ai, "AO": ao}
+    bal.base = dict(bal.reserved)
+    return bal
+
+
+def test_asix_domyslnie_zachowuje_stare_zachowanie_auto():
+    """
+    Wywołanie bez parametrów architektury musi dawać DOKŁADNIE to, co dawała
+    wersja w pełni automatyczna — inaczej dołożenie wyboru po cichu zmieniłoby
+    wyceny wszystkich dotychczasowych projektów.
+    """
+    sel = select_asix(_bal_asix(), wspolczynnik=1.2)
+    assert sel.architektura_zrodlo == "auto"
+    assert sel.typ_licencji == sel.sugestia_typ
+    assert sel.n_terminale == sel.sugestia_terminale
+    assert [it.nr_katalogowy for it in sel.items] == ["ASIX-WA256W+1R PM"]
+
+
+def test_asix_inzynier_wymusza_serwer_wbrew_skali():
+    """
+    212 zmiennych -> skala sugeruje stację. Klient wymaga serwera i aplikacja
+    ma go posłuchać, a nie „wiedzieć lepiej".
+    """
+    sel = select_asix(_bal_asix(), architektura="serwer")
+    assert sel.sugestia_typ == "stacja"       # sugestia się nie zmieniła...
+    assert sel.typ_licencji == "serwer"       # ...ale decyduje inżynier
+    assert sel.architektura_zrodlo == "inżynier"
+    assert sel.items[0].nr_katalogowy == "ASIX-WA256S+1R PM"
+
+
+def test_asix_redundancja_to_dwie_licencje_serwera():
+    sel = select_asix(_bal_asix(), architektura="serwer", redundancja=True)
+    assert sel.items[0].ilosc == 2
+    assert any("2 licencje serwera" in w for w in sel.warnings)
+
+
+def test_asix_redundancja_stacji_odrzucona_z_ostrzezeniem():
+    """
+    Redundancja dotyczy serwera. Zamiast po cichu policzyć dwie stacje
+    (i zawyżyć ofertę), dobór ma odmówić i powiedzieć dlaczego.
+    """
+    sel = select_asix(_bal_asix(), architektura="stacja", redundancja=True)
+    assert sel.redundancja is False
+    assert sel.items[0].ilosc == 1
+    assert any("Redundancja pominięta" in w for w in sel.warnings)
+
+
+def test_asix_terminale_wg_inzyniera():
+    sel = select_asix(_bal_asix(), architektura="serwer", n_terminale=4)
+    terminale = [it for it in sel.items if it.nr_katalogowy == "ASIX-WANLO + 1R PM"]
+    assert terminale and terminale[0].ilosc == 4
+
+
+def test_asix_terminale_przy_stacji_pomijane_z_ostrzezeniem():
+    sel = select_asix(_bal_asix(), architektura="stacja", n_terminale=3)
+    assert not any(it.nr_katalogowy == "ASIX-WANLO + 1R PM" for it in sel.items)
+    assert any("terminale" in w for w in sel.warnings)
+
+
+def test_asix_stacje_zdalne_www_lite():
+    """
+    3 zdalnych klientów WWW = terminal WWW z pierwszym klientem + 2 kolejnych.
+    Wariant Lite ma trafić na inny numer katalogowy niż pełny.
+    """
+    sel = select_asix(_bal_asix(), dostep_zdalny="WWW", n_klientow_zdalnych=3,
+                      klient_www_lite=True)
+    m = {it.nr_katalogowy: it.ilosc for it in sel.items}
+    assert m["As4www+1CAL"] == 1
+    assert m["As4www1CAL-Lite"] == 2
+    assert "As4www1CAL" not in m          # pełny klient NIE ma się pojawić
+
+    pelny = select_asix(_bal_asix(), dostep_zdalny="WWW", n_klientow_zdalnych=3)
+    assert {it.nr_katalogowy for it in pelny.items} >= {"As4www+1CAL", "As4www1CAL"}
+
+
+def test_asix_stacje_zdalne_rds():
+    sel = select_asix(_bal_asix(), dostep_zdalny="RDS", n_klientow_zdalnych=2)
+    m = {it.nr_katalogowy: it.ilosc for it in sel.items}
+    assert m["ASIX-WANLO + 1R PM"] == 1
+    assert m["AsRDSCAL"] == 1             # pierwszy klient jest w terminalu
+
+
+def test_asix_dostep_zdalny_zawsze_z_ostrzezeniem_o_pakietowaniu():
+    """
+    Skład licencji zdalnych jest złożony z pojedynczych pozycji cennika,
+    a zasady pakietowania u producenta bywają inne. To musi być widoczne
+    w wyniku, a nie tylko w komentarzu w kodzie.
+    """
+    sel = select_asix(_bal_asix(), dostep_zdalny="RDS", n_klientow_zdalnych=2)
+    assert any("ASKOM" in w for w in sel.warnings)
+
+
+def test_asix_zero_klientow_nie_dodaje_licencji_zdalnych():
+    sel = select_asix(_bal_asix(), dostep_zdalny="WWW", n_klientow_zdalnych=0)
+    assert not any("www" in it.nr_katalogowy.lower() for it in sel.items)
+
+
+def test_asix_nieznana_architektura_odrzucona():
+    import pytest
+    with pytest.raises(ValueError):
+        select_asix(_bal_asix(), architektura="chmura")
+    with pytest.raises(ValueError):
+        select_asix(_bal_asix(), dostep_zdalny="telepatia")
+
+
+def test_sugeruj_architekture_zgodna_z_select_asix():
+    """
+    Panel wypełnia pole „liczba terminali" z sugeruj_architekture() ZANIM
+    powstanie widget. Ta sugestia musi być identyczna z tym, co policzy
+    select_asix — inaczej pole startowałoby od innej wartości, niż wynika
+    z doboru.
+    """
+    from core.scada_asix import sugeruj_architekture
+    for bal in (_bal_asix(), _bal_asix(400, 200, 300, 100), _bal_asix(4, 2, 2, 1)):
+        typ, terminale, opis = sugeruj_architekture(bal, 1.2)
+        sel = select_asix(bal, wspolczynnik=1.2)
+        assert (typ, terminale, opis) == (
+            sel.sugestia_typ, sel.sugestia_terminale, sel.sugestia_opis
+        )
 
 
 # --- cables -------------------------------------------------------------------
@@ -1043,3 +1326,170 @@ def test_records_to_devices_roundtrip():
     bal_restored = count_io(restored, reserve_percent=30)
     assert bal_original.base == bal_restored.base
     assert bal_original.reserved == bal_restored.reserved
+
+
+# --- urzadzenie_reczne: dopisanie pozycji spoza pliku zrodlowego ---------------
+# Uwaga 2 z testów przełożonego: „W uwagach parsera pojawia się zapis - brak
+# sygnałów w kolumnach... W takim przypadku dobrze jak byłaby opcja ręcznego
+# dodawania".
+
+from core.parser import urzadzenie_reczne
+
+
+def test_reczne_sygnaly_jawne_maja_zrodlo_inzynier():
+    """
+    Sygnał dopisany ręcznie musi być odróżnialny od odczytanego z kolumny
+    i od wywnioskowanego z typu urządzenia — inaczej w tabeli wyników nie
+    widać, skąd się wziął.
+    """
+    dev = urzadzenie_reczne("Przetwornik ciśnienia", "PT-99", ilosc=2, ai=1)
+    assert [s["typ"] for s in dev.sygnaly] == ["AI"]
+    assert {s["source"] for s in dev.sygnaly} == {"inzynier"}
+    assert dev.ilosc == 2
+    assert dev.ilosc_podana is True
+
+
+def test_reczne_sygnaly_wchodza_do_bilansu_z_mnoznikiem_ilosci():
+    """Liczby sygnałów są NA JEDNO urządzenie — bilans mnoży je przez ilość."""
+    dev = urzadzenie_reczne("Zawór regulacyjny", ilosc=3, ai=1, ao=1, di=2)
+    bal = count_io([dev], reserve_percent=0)
+    assert bal.base["AI"] == 3
+    assert bal.base["AO"] == 3
+    assert bal.base["DI"] == 6
+    assert bal.source_counts["inzynier"] == 12
+
+
+def test_reczne_jawne_sygnaly_maja_pierwszenstwo_przed_regula_opisu():
+    """
+    Tak samo jak przy czytaniu pliku: reguła typu urządzenia działa TYLKO
+    wtedy, gdy sygnałów nie podano jawnie.
+    """
+    dev = urzadzenie_reczne("Pompa z falownikiem", ilosc=1, di=1,
+                            wywnioskuj_z_opisu=True)
+    assert [s["typ"] for s in dev.sygnaly] == ["DI"]
+    assert {s["source"] for s in dev.sygnaly} == {"inzynier"}
+
+
+def test_reczne_bez_sygnalow_moze_uzyc_reguly_opisu():
+    dev = urzadzenie_reczne("Pompa z falownikiem", wywnioskuj_z_opisu=True)
+    typy = sorted(s["typ"] for s in dev.sygnaly)
+    assert typy == ["AO", "DI", "DI", "DO"]
+    assert {s["source"] for s in dev.sygnaly} == {"typ_urzadzenia"}
+
+
+def test_reczne_nierozpoznany_opis_nie_zgaduje():
+    """
+    Reguła, która nie rozpoznaje opisu, ma NIE wymyślać sygnałów — ma
+    powiedzieć, że ich nie ma, i poradzić podanie ich liczbowo.
+    """
+    dev = urzadzenie_reczne("Cos zupelnie nieznanego", wywnioskuj_z_opisu=True)
+    assert dev.sygnaly == []
+    assert any("nie rozpoznała opisu" in w for w in dev.warnings)
+
+
+def test_reczne_bez_sygnalow_nie_rusza_bilansu():
+    """
+    Pozycja dopisana bez sygnałów (np. po to, żeby ją wycenić w sekcji 1a)
+    nie może wpływać na dobór sterownika.
+    """
+    dev = urzadzenie_reczne("Skrzynka przyłączeniowa", ilosc=5)
+    bal = count_io([dev], reserve_percent=30)
+    assert sum(bal.base.values()) == 0
+    assert any("BEZ sygnałów I/O" in w for w in dev.warnings)
+
+
+def test_reczne_przezywa_zapis_i_odczyt_snapshotu():
+    """
+    Ręcznie dopisane urządzenie musi przetrwać zapis projektu do historii
+    i wczytanie go z powrotem — inaczej praca inżyniera ginęłaby przy
+    pierwszym zapisie.
+    """
+    import json
+    dev = urzadzenie_reczne("Przetwornik ciśnienia", "PT-99", ilosc=2, ai=1)
+    records = json.loads(json.dumps(devices_to_records([dev]), ensure_ascii=False))
+    restored = records_to_devices(records)
+    assert restored[0].sygnaly == dev.sygnaly
+    assert restored[0].warnings == dev.warnings
+    assert count_io(restored, 0).base == count_io([dev], 0).base
+
+
+# --- branza: odsianie pozycji spoza automatyki z listy wyboru (sekcja 1a) ------
+# Uwaga 3 z testów przełożonego: „Ad. 1a. Urządzenia obiektowe wchodzące
+# w zakres wyceny AKPiA - dodaje oprawy, sygnalizatory i inne nie związane
+# z branżą automatyki".
+
+import pandas as pd
+
+from core.device_rules import branza_urzadzenia, BRANZA_AKPIA, BRANZA_POZA
+
+
+def test_branza_rozpoznaje_pozycje_elektryczne():
+    for opis in ("Oprawa oświetleniowa LED 36W",
+                 "Oprawy oświetlenia ewakuacyjnego",
+                 "Sygnalizator optyczno-akustyczny",
+                 "Gniazdo wtyczkowe 230V",
+                 "Korytko kablowe 100x60",
+                 "Czujka dymu",
+                 "Kamera IP"):
+        assert branza_urzadzenia(opis) == BRANZA_POZA, opis
+
+
+def test_branza_nie_odsiewa_automatyki():
+    for opis in ("Przetwornik ciśnienia",
+                 "Przepływomierz elektromagnetyczny",
+                 "Zawór regulacyjny z siłownikiem",
+                 "Pompa z falownikiem",
+                 "Szafa zasilająco-sterownicza"):
+        assert branza_urzadzenia(opis) == BRANZA_AKPIA, opis
+
+
+def test_branza_przy_watpliwosci_zostawia_akpia():
+    """
+    Reguła odsiewa tylko to, co rozpoznaje JAKO OBCE. Odwrotne podejście
+    (wpuszczać wyłącznie rozpoznaną automatykę) chowałoby przed inżynierem
+    każde urządzenie o nietypowej nazwie - czyli dokładnie te, które
+    najbardziej wymagają jego decyzji.
+    """
+    assert branza_urzadzenia("Urządzenie XYZ-2000 wg specyfikacji") == BRANZA_AKPIA
+    assert branza_urzadzenia("") == BRANZA_AKPIA
+
+
+def test_branza_nie_rusza_bilansu_io():
+    """
+    Oznaczenie branży NIE MOŻE zmieniać bilansu: o tym, czy pozycja generuje
+    I/O, decyduje dokumentacja (kolumny sygnałów), a nie słownik nazw.
+    Sygnalizator sterowany z PLC dalej ma się liczyć jako DO.
+    """
+    df = pd.DataFrame([{
+        "L.p.": 1, "Urządzenie": "SYG-01", "Typ / Opis": "Sygnalizator optyczno-akustyczny",
+        "Ilość": 2, "Sygnał Analogowy": "-", "Sygnał Cyfrowy": "Załącz sygnalizację (DO)",
+    }])
+    devices, _ = parse_devices(df)
+    assert branza_urzadzenia(devices[0].opis) == BRANZA_POZA
+    bal = count_io(devices, reserve_percent=0)
+    assert bal.base["DO"] == 2, "oznaczenie branży nie może wykluczyć sygnału z bilansu"
+
+
+# --- cennik: polski zapis liczby w kolumnie ceny ------------------------------
+
+def test_cena_przyjmuje_polski_zapis_liczby():
+    """
+    Cennik uzupełnia inżynier ręcznie, zwykle kopiując z oferty dostawcy albo
+    z Excela - a tam separatorem dziesiętnym jest PRZECINEK, a tysiące bywają
+    rozdzielone spacją. Wcześniej takie komórki leciały przez gołe float(),
+    ValueError był łapany i cena po cichu stawała się None: pozycja pokazywała
+    "BRAK CENY" i WYPADAŁA Z SUMY, mimo że inżynier ją wpisał.
+    """
+    from core.budget import _parse_cena
+    assert _parse_cena("4350") == 4350.0
+    assert _parse_cena("4350.50") == 4350.50
+    assert _parse_cena("4350,50") == 4350.50      # przecinek dziesiętny
+    assert _parse_cena("1 234,50") == 1234.50     # spacja jako separator tysięcy
+    assert _parse_cena("1 234,50") == 1234.50  # spacja niełamliwa (kopiuj-wklej)
+
+
+def test_cena_pusta_lub_niepoprawna_to_brak_ceny():
+    """Pusta komórka i śmieć dają None - „BRAK CENY", nie zero."""
+    from core.budget import _parse_cena
+    for wartosc in ("", "   ", None, "do ustalenia", "-"):
+        assert _parse_cena(wartosc) is None, wartosc

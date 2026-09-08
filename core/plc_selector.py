@@ -34,6 +34,27 @@ PLATFORMY = {
     "Beckhoff CX9020": "beckhoff_cx.csv",
     "Beckhoff CX7000": "beckhoff_cx7000.csv",
     "Siemens ET200SP": "siemens_et200sp.csv",
+    "Siemens S7-1500": "siemens_s7_1500.csv",
+}
+
+# Uwagi doklejane do KAŻDEGO doboru danej platformy - miejsce na jawne
+# powiedzenie, skąd wzięte są numery katalogowe, jeśli NIE pochodzą
+# z projektu zweryfikowanego co do sztuki.
+#
+# Beckhoff CX9020 i Siemens ET200SP takiej uwagi nie mają, bo ich listwy
+# odtworzono z realnych projektów wykonawczych (odpowiednio DPK2 Wujek
+# i Malbork). S7-1500 dołożono na prośbę inżyniera, bez projektu
+# referencyjnego pod ręką - i to musi być widać w wyniku, a nie tylko
+# w komentarzu w kodzie.
+UWAGI_PLATFORM = {
+    "Siemens S7-1500": (
+        "Platforma S7-1500: numery katalogowe to TYPOWA konfiguracja "
+        "(CPU 1513-1 PN, moduły 32xDI / 32xDQ / 8xAI / 4xAQ), a nie odwzorowanie "
+        "zweryfikowanego projektu - w odróżnieniu od Beckhoffa CX9020 i ET200SP. "
+        "Przed wysłaniem oferty sprawdź numery i wielkość CPU w aktualnym "
+        "katalogu Siemensa; podmiana to edycja katalogi/siemens_s7_1500.csv, "
+        "bez zmian w kodzie."
+    ),
 }
 
 
@@ -62,6 +83,15 @@ class PlcSelection:
     def modules_on_rail(self) -> int:
         """Moduły montowane na szynie (io + szeregowy) - do liczenia BaseUnit."""
         return sum(i.ilosc for i in self.items if i.typ in ("io", "SERIAL"))
+
+    @property
+    def io_modules(self) -> int:
+        """
+        Same karty I/O, BEZ modułów komunikacyjnych - do liczenia elementów,
+        które przysługują wyłącznie kartom wejść/wyjść (S7-1500: złącze
+        czołowe; moduł CM PtP ma własne gniazdo sub-D i go nie potrzebuje).
+        """
+        return sum(i.ilosc for i in self.items if i.typ == "io")
 
 
 # Cache katalogów kart, kluczowany (ścieżka, mtime) - patrz analogiczny
@@ -154,8 +184,10 @@ def select_plc(balance, platforma: str, use_serial_if: bool = True) -> PlcSelect
                 katalog_typ=typ,
             ))
 
-    # 1) Elementy systemowe zawsze obecne (CPU, ETH, licencja, karta SD...)
-    for typ in ("CPU", "LICENSE", "ETH", "SDCARD"):
+    # 1) Elementy systemowe zawsze obecne (CPU, ETH, licencja, karta SD,
+    #    zasilacz systemowy...). Pozycji nieobecnych w katalogu danej
+    #    platformy add() po prostu nie doda.
+    for typ in ("CPU", "LICENSE", "ETH", "SDCARD", "SYSPSU"):
         add(typ, 1)
 
     # 2) Interfejs szeregowy (opcjonalny)
@@ -182,6 +214,12 @@ def select_plc(balance, platforma: str, use_serial_if: bool = True) -> PlcSelect
 
     # 4) Elementy montażowe zależne od platformy
     _add_platform_extras(sel, catalog)
+
+    # 5) Uwaga o pochodzeniu katalogu (jeśli platforma nie ma projektu
+    #    referencyjnego) - patrz UWAGI_PLATFORM.
+    uwaga = UWAGI_PLATFORM.get(platforma)
+    if uwaga:
+        sel.warnings.append(uwaga)
 
     return sel
 
@@ -288,6 +326,24 @@ def _add_platform_extras(sel: PlcSelection, catalog: dict) -> None:
         # Bus Adapter: zwykle 1-2 (redundancja portów). Przyjmujemy 1 na stację.
         sel.items.append(PlcItem(c["nr"], c["opis"], 1, typ="montaz",
                                  grupa_rabatowa=c["grupa_rabatowa"], katalog_typ="BUSADAPTER"))
+
+    # Siemens S7-1500: moduły siedzą wprost na szynie profilowej (bez BaseUnit),
+    # ale KAŻDA karta I/O potrzebuje osobnego złącza czołowego - w katalogu
+    # Siemensa jest to oddzielna pozycja zamówieniowa, więc pominięcie jej
+    # zaniżało ofertę o tyle sztuk, ile jest kart.
+    # Liczymy po io_modules, nie modules_on_rail: moduł komunikacyjny CM PtP
+    # ma własne gniazdo sub-D i złącza czołowego nie wymaga.
+    if "FRONTCONN" in catalog and sel.io_modules > 0:
+        c = catalog["FRONTCONN"]
+        sel.items.append(PlcItem(c["nr"], c["opis"], sel.io_modules, typ="montaz",
+                                 grupa_rabatowa=c["grupa_rabatowa"], katalog_typ="FRONTCONN"))
+    if "RAIL" in catalog and n_modules > 0:
+        c = catalog["RAIL"]
+        # Jedna szyna na stację. Świadomie NIE liczymy szyn z sumy szerokości
+        # modułów - to zależy od układu w szafie (ile rzędów), czego aplikacja
+        # nie zna; inżynier koryguje ilość, jeśli stacja idzie na dwa rzędy.
+        sel.items.append(PlcItem(c["nr"], c["opis"], 1, typ="montaz",
+                                 grupa_rabatowa=c["grupa_rabatowa"], katalog_typ="RAIL"))
 
 
 def format_selection(sel: PlcSelection) -> str:

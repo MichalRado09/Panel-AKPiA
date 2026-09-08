@@ -31,6 +31,8 @@ GRUPY_RABATOWE = {
     "SIEMENS": 0,
     "ASIX": 0,
     "APARATURA": 0,
+    "OBUDOWY": 0,           # obudowa rozdzielnicy, korytka, szyny - inny
+                            # dostawca niż aparatura, więc i inny rabat
     "KABLE": 0,
     "AKPIA_URZADZENIA": 0,  # przetworniki i inne urządzenia obiektowe
                             # wycenione ręcznie przez inżyniera - patrz device_budget.py
@@ -88,6 +90,34 @@ class Budget:
 _cennik_cache: dict[tuple[str, float], dict[str, dict]] = {}
 
 
+def _parse_cena(raw) -> float | None:
+    """
+    Cena z komórki CSV. Pusta komórka albo śmieć -> None ("BRAK CENY").
+
+    PRZYJMUJE POLSKI ZAPIS LICZBY, i to nie jest kosmetyka. Cennik uzupełnia
+    inżynier ręcznie, zwykle kopiując z oferty dostawcy albo z Excela, gdzie
+    separatorem dziesiętnym jest PRZECINEK, a tysiące bywają rozdzielone
+    spacją ("1 234,50"). Poprzednia wersja robiła na tym gołe float(), łapała
+    ValueError i po cichu ustawiała None - czyli wpisana cena znikała bez
+    jednego słowa wyjaśnienia, a pozycja pokazywała "BRAK CENY" i wypadała
+    z sumy. Dokładnie ten rodzaj cichego zaniżenia oferty, którego ta
+    aplikacja ma pilnować.
+
+    Spacje (także niełamliwe, wklejane z Excela i stron WWW) są usuwane,
+    przecinek zamieniany na kropkę.
+    """
+    if raw is None:
+        return None
+    s = str(raw).replace(" ", "").replace(" ", "").strip()
+    if not s:
+        return None
+    s = s.replace(",", ".")
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
 def load_cennik(filename: str = "cennik.csv") -> dict[str, dict]:
     """
     Wczytuje cennik z CSV. Zwraca dict: nr_katalogowy -> {nazwa, cena, waluta, grupa}.
@@ -118,10 +148,7 @@ def load_cennik(filename: str = "cennik.csv") -> dict[str, dict]:
             nr = row.get("Nr_katalogowy", "").strip()
             if not nr:
                 continue
-            try:
-                cena = float(row.get("Cena_Katalogowa", "0"))
-            except (ValueError, TypeError):
-                cena = None
+            cena = _parse_cena(row.get("Cena_Katalogowa"))
             cennik[nr] = {
                 "nazwa": row.get("Nazwa", "").strip(),
                 "cena": cena,

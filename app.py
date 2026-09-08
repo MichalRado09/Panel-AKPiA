@@ -16,15 +16,22 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 # --- RDZEŃ DETERMINISTYCZNY (core/) ---
 # Cały dobór i zliczanie dzieje się tutaj, NIE w LLM.
 from core.ai_contract import build_extraction_prompt, parse_ai_json, build_response_schema
-from core.parser import parse_devices, parse_ai_devices, devices_to_records, records_to_devices
+from core.parser import (
+    parse_devices, parse_ai_devices, devices_to_records, records_to_devices,
+    urzadzenie_reczne,
+)
 from core.io_counter import count_io, format_balance, IO_TYPES
 from core.plc_selector import select_plc, format_selection, PLATFORMY
 from core.budget import calculate_budget, format_budget, GRUPY_RABATOWE
 from core.cables import select_cables
 from core.comparison import compare_variants
-from core.scada_asix import select_asix
+from core.scada_asix import (
+    select_asix, opis_architektury, sugeruj_architekture,
+    ARCHITEKTURY, DOSTEP_ZDALNY,
+)
 from core.cabinet import select_cabinet
 from core.device_budget import build_device_budget, device_key, GRUPA_RABATOWA
+from core.device_rules import branza_urzadzenia, BRANZA_POZA
 from core.extraction_diff import compare_extractions, ExtractionDiff
 from core.pdf_report import create_pdf_report
 from core.validator import validate_offer, Severity
@@ -470,13 +477,16 @@ def create_devices_excel(devices, balance, platforma: str, rabaty: dict = None, 
         {"Ilość": cab_sel.prad_przetworniki_ma, "Nr katalogowy": "Przetworniki [mA]", "Nazwa": "", "Jednostka": "mA", "Reguła doboru": "", "Grupa rabatowa": ""},
         {"Ilość": cab_sel.prad_z_zapasem_a, "Nr katalogowy": "RAZEM z zapasem 30% [A]", "Nazwa": "", "Jednostka": "A", "Reguła doboru": "", "Grupa rabatowa": ""},
     ])
-    asix = select_asix(balance, wspolczynnik=asix_factor)
+    # Ta sama architektura, co wybrana w sekcji 5 — inaczej oferta w Excelu
+    # różniłaby się od tego, co inżynier widzi i zatwierdza na ekranie.
+    asix = select_asix(balance, wspolczynnik=asix_factor, **get_asix_arch())
     df_scada = pd.DataFrame([
         {"Parametr": "Sygnałów I/O (po rezerwie)", "Wartość": asix.zmienne_io},
         {"Parametr": f"Współczynnik zmiennych", "Wartość": asix.wspolczynnik},
         {"Parametr": "Zmiennych procesowych", "Wartość": asix.zmienne_obliczone},
         {"Parametr": "Pakiet licencyjny", "Wartość": asix.prog_nazwa},
-        {"Parametr": "Sugestia architektury", "Wartość": asix.sugestia_opis},
+        {"Parametr": "Architektura (przyjęta)", "Wartość": opis_architektury(asix)},
+        {"Parametr": "Sugestia ze skali projektu", "Wartość": asix.sugestia_opis},
     ] + [
         {"Parametr": f"Pozycja: {it.nr_katalogowy}", "Wartość": f"{it.ilosc}x {it.nazwa} ({it.cena_katalogowa} PLN)" if it.cena_katalogowa else f"{it.ilosc}x {it.nazwa}"}
         for it in asix.items
@@ -496,7 +506,13 @@ def create_devices_excel(devices, balance, platforma: str, rabaty: dict = None, 
     # Dodaj pozycje ASIX i HMI do kosztorysu
     from core.plc_selector import PlcItem as _PI
     asix_plc_items = [_PI(nr=it.nr_katalogowy, opis=it.nazwa, ilosc=it.ilosc, grupa_rabatowa="ASIX") for it in asix.items]
-    cab_plc_items = [_PI(nr=it.nr_katalogowy, opis=it.nazwa, ilosc=it.ilosc, grupa_rabatowa="APARATURA") for it in cab_sel.items]
+    # Grupa rabatowa Z POZYCJI, nie zaszyta na sztywno: obudowa, korytka i szyny
+    # przychodzą od innego dostawcy niż aparatura na szynę, więc mają własny
+    # rabat (grupa OBUDOWY). Wpisanie tu "APARATURA" dla wszystkiego liczyłoby
+    # obudowę rabatem wynegocjowanym u dostawcy złączek.
+    cab_plc_items = [_PI(nr=it.nr_katalogowy, opis=it.nazwa, ilosc=it.ilosc,
+                         grupa_rabatowa=it.grupa_rabatowa or "APARATURA")
+                     for it in cab_sel.items]
     hmi_sel_xl = build_hmi_selection(hmi_entries or [])
     hmi_plc_items = [_PI(nr=f"HMI-{i}", opis=f"{it.nazwa} ({it.lokalizacja})" if it.lokalizacja else it.nazwa,
                          ilosc=it.ilosc, grupa_rabatowa="APARATURA")
@@ -832,10 +848,10 @@ def render_device_table_editor(devices: list) -> list:
         updated.append(dev)
 
     if n_new_ignored:
-        st.warning(
-            f"Zignorowano {n_new_ignored} ręcznie dodany wiersz — dodawanie nowych "
-            "urządzeń w tej tabeli nie jest wspierane (brak opisu = brak reguły "
-            "sygnałów). Dodaj urządzenie w źródłowym pliku i wczytaj ponownie."
+        st.info(
+            f"ℹ Pominięto {n_new_ignored} pusty wiersz dodany w tabeli — nowe "
+            "urządzenia dodaje się formularzem „➕ Dodaj urządzenie ręcznie” pod "
+            "tabelą, bo trzeba przy nich podać sygnały I/O."
         )
     if len(updated) != len(devices):
         st.caption(
@@ -844,6 +860,63 @@ def render_device_table_editor(devices: list) -> list:
         )
 
     return updated
+
+
+def render_manual_device_form(devices: list) -> bool:
+    """
+    Formularz dopisania urządzenia, którego nie ma w pliku źródłowym.
+
+    PO CO: parser bywa w sytuacji, w której umie powiedzieć tylko „Brak
+    sygnałów w kolumnach i nierozpoznany typ urządzenia" — i słusznie, bo
+    zgadywanie byłoby gorsze. Ale dotąd zostawiało to inżyniera bez wyjścia:
+    jedyną drogą naprzód była edycja źródłowego Excela i przejście całej
+    analizy od nowa (upload → parsowanie → ekstrakcja → dobór). Tak samo, gdy
+    w zestawieniu po prostu brakowało pozycji, którą projektant ma w głowie.
+
+    Zwraca True, jeśli urządzenie zostało dodane (wywołujący robi rerun).
+    """
+    with st.expander("➕ Dodaj urządzenie ręcznie", expanded=False):
+        st.caption(
+            "Dla pozycji, których nie ma w pliku, albo takich, przy których parser "
+            "napisał „brak sygnałów w kolumnach”. Sygnały dopisane tutaj są "
+            "oznaczane źródłem „inzynier”, więc widać w tabeli, że nie pochodzą "
+            "z pliku ani z reguły typu urządzenia."
+        )
+        with st.form("form_reczne_urzadzenie", clear_on_submit=True):
+            k1, k2, k3 = st.columns([1, 2, 0.7])
+            oznaczenie = k1.text_input("Oznaczenie projektowe", placeholder="np. PT-105")
+            opis = k2.text_input("Opis / typ urządzenia *",
+                                 placeholder="np. Przetwornik ciśnienia 4-20mA")
+            ilosc = k3.number_input("Ilość", min_value=1, max_value=999, value=1, step=1)
+
+            s1, s2, s3, s4 = st.columns(4)
+            di = s1.number_input("DI", min_value=0, max_value=99, value=0, step=1)
+            do = s2.number_input("DO", min_value=0, max_value=99, value=0, step=1)
+            ai = s3.number_input("AI", min_value=0, max_value=99, value=0, step=1)
+            ao = s4.number_input("AO", min_value=0, max_value=99, value=0, step=1)
+            st.caption("Liczby sygnałów NA JEDNO urządzenie — ilość sztuk mnoży je w bilansie.")
+
+            wywnioskuj = st.checkbox(
+                "Jeśli nie podam sygnałów — wywnioskuj je z opisu",
+                value=True,
+                help="Użyje tej samej reguły typu urządzenia, co przy czytaniu pliku "
+                     "(np. „Pompa z falownikiem” → AO + DO + 2x DI). Sygnały podane "
+                     "liczbowo zawsze mają pierwszeństwo.",
+            )
+            wyslij = st.form_submit_button("Dodaj urządzenie", type="primary")
+
+        if wyslij:
+            if not opis.strip():
+                st.error("Opis jest wymagany — bez niego nie ma jak rozpoznać urządzenia.")
+                return False
+            devices.append(urzadzenie_reczne(
+                opis=opis, oznaczenie=oznaczenie, ilosc=int(ilosc),
+                di=int(di), do=int(do), ai=int(ai), ao=int(ao),
+                wywnioskuj_z_opisu=wywnioskuj,
+            ))
+            st.session_state.devices = devices
+            return True
+    return False
 
 
 def render_undecided_signal_resolver(devices: list) -> None:
@@ -903,6 +976,194 @@ def render_undecided_signal_resolver(devices: list) -> None:
                 st.rerun()
 
 
+def render_device_budget_table(devices, rabaty: dict):
+    """
+    Kosztorys urządzeń AKPiA (sekcja 9a) — z możliwością wpisania ceny WPROST
+    w tej tabeli.
+
+    DLACZEGO TU, SKORO CENĘ DAŁO SIĘ JUŻ PODAĆ W 1a: bo nikt jej tam nie
+    szukał. Przełożony testujący aplikację napisał wprost „Ad. 9a. Kosztorys
+    urządzeń AKPiA — nie mogę ręcznie uzupełnić cen", mimo że kolumna „Cena
+    ręczna" istniała piętro wyżej, na liście WYBORU urządzeń. Sekcja 9a
+    pokazywała tabelę tylko do odczytu i sama pisała „uzupełnij ręcznie",
+    nie mówiąc gdzie. Funkcja, której nie da się znaleźć tam, gdzie widać
+    problem, nie istnieje.
+
+    Obie tabele piszą do tego samego st.session_state["akpia_price_overrides"],
+    więc cena wpisana w 1a natychmiast widać tutaj i odwrotnie.
+
+    Zwraca DeviceBudgetSelection policzone JUŻ PO uwzględnieniu edycji.
+    """
+    if "akpia_price_overrides" not in st.session_state:
+        st.session_state.akpia_price_overrides = {}
+
+    dev_budget = build_device_budget(
+        devices, st.session_state.get("wycena_akpia_keys", set()), rabaty=rabaty,
+        price_overrides=st.session_state.akpia_price_overrides,
+    )
+    if not dev_budget.items:
+        st.caption("Brak zaznaczonych urządzeń — sekcja 1a pozwala je dodać.")
+        return dev_budget
+
+    overrides = st.session_state.akpia_price_overrides
+    df = pd.DataFrame([
+        {
+            "Oznaczenie": it.oznaczenie,
+            "Opis": it.opis,
+            "Ilość": it.ilosc,
+            "Cena kat. [PLN]": it.cena_katalogowa,
+            "Rabat [%]": it.rabat_pct,
+            "Cena netto/szt. [PLN]": it.cena_netto_jed,
+            "Wartość netto [PLN]": it.wartosc_netto,
+            "_key": it.klucz,
+        }
+        for it in dev_budget.items
+    ])
+
+    edited = st.data_editor(
+        df,
+        column_config={
+            "Cena kat. [PLN]": st.column_config.NumberColumn(
+                "Cena kat. [PLN]", min_value=0.0, step=1.0, format="%.2f",
+                help="Wpisz cenę katalogową za sztukę. Puste = brak ceny "
+                     "(pozycja nie wejdzie do sumy).",
+            ),
+            # Reszta kolumn jest WYLICZANA — edycja netto z pominięciem ceny
+            # katalogowej i rabatu rozjechałaby kosztorys z resztą oferty.
+            "Rabat [%]": st.column_config.NumberColumn("Rabat [%]", format="%.0f"),
+            "Cena netto/szt. [PLN]": st.column_config.NumberColumn(
+                "Cena netto/szt. [PLN]", format="%.2f"),
+            "Wartość netto [PLN]": st.column_config.NumberColumn(
+                "Wartość netto [PLN]", format="%.2f"),
+            "_key": None,
+        },
+        disabled=["Oznaczenie", "Opis", "Ilość", "Rabat [%]",
+                  "Cena netto/szt. [PLN]", "Wartość netto [PLN]"],
+        hide_index=True,
+        width="stretch",
+        key="device_budget_editor",
+    )
+
+    # Zapisz zmienione ceny i przelicz, jeśli cokolwiek się zmieniło.
+    #
+    # Porównujemy z WYŚWIETLONĄ wartością, a nie z zawartością overrides.
+    # Inaczej pozycja wyceniona z cennika (override pusty, w tabeli widać cenę
+    # z cennika) wyglądałaby przy pierwszym renderze na „zmienioną" i zostałaby
+    # przypięta jako cena ręczna — a wtedy późniejsza aktualizacja cennika już
+    # by na tę pozycję nie działała.
+    pokazane = {it.klucz: it.cena_katalogowa for it in dev_budget.items}
+    zmienione = False
+    for _, row in edited.iterrows():
+        key = row["_key"]
+        nowa = row["Cena kat. [PLN]"]
+        nowa = None if pd.isna(nowa) else float(nowa)
+        if nowa == pokazane.get(key):
+            continue
+        if nowa is None:
+            overrides.pop(key, None)   # wyczyszczenie pola = wróć do cennika
+        else:
+            overrides[key] = nowa
+        zmienione = True
+
+    if zmienione:
+        st.rerun()
+
+    sum_cols = st.columns(2)
+    sum_cols[0].metric("Suma katalogowa (AKPiA)", f"{dev_budget.suma_katalogowa:,.2f} PLN")
+    sum_cols[1].metric("Suma netto (AKPiA)", f"{dev_budget.suma_netto:,.2f} PLN")
+    if dev_budget.brak_ceny:
+        st.warning(
+            f"⚠ {len(dev_budget.brak_ceny)} pozycji bez ceny katalogowej — wpisz cenę "
+            f"w kolumnie „Cena kat. [PLN]” w tabeli powyżej. Pozycje bez ceny NIE "
+            f"wchodzą do sumy, więc oferta jest o nie zaniżona."
+        )
+    return dev_budget
+
+
+def get_asix_arch() -> dict:
+    """
+    Parametry architektury SCADA wybrane przez inżyniera w sekcji 5.
+
+    Czytane z session_state, żeby te SAME ustawienia trafiły do eksportów
+    (Excel/Word) i do walidatora — inaczej oferta w pliku różniłaby się od
+    tego, co widać na ekranie.
+
+    Domyślne wartości = pełne "auto", czyli zachowanie sprzed wprowadzenia
+    wyboru architektury.
+    """
+    return {
+        "architektura": st.session_state.get("asix_architektura", "auto"),
+        "redundancja": st.session_state.get("asix_redundancja", False),
+        "n_terminale": st.session_state.get("asix_n_terminale"),
+        "dostep_zdalny": st.session_state.get("asix_dostep_zdalny", "brak"),
+        "n_klientow_zdalnych": st.session_state.get("asix_n_klientow", 0),
+        "klient_www_lite": st.session_state.get("asix_www_lite", False),
+    }
+
+
+def render_asix_architecture_controls(balance, wspolczynnik: float) -> dict:
+    """
+    Wybór architektury SCADA — decyzja inżyniera, nie aplikacji.
+
+    Dotąd architekturę wyliczała wyłącznie skala projektu (liczba zmiennych)
+    i NIE DAŁO SIĘ jej zmienić z interfejsu, mimo że dokumentacja modułu
+    obiecywała, że „inżynier ZAWSZE może nadpisać sugestię". Realnie
+    architekturę narzuca klient w wymaganiach (serwer zamiast stacji,
+    redundancja, liczba stanowisk, dostęp zdalny) i dwa węzły o tej samej
+    liczbie sygnałów potrafią wymagać zupełnie różnych rozwiązań.
+
+    Z liczby sygnałów wynika tylko PRÓG LICENCYJNY (limit zmiennych) — i to
+    zostaje liczone automatycznie, bo tego klient nie negocjuje.
+
+    Zwraca kwargs do select_asix().
+    """
+    st.caption(
+        "Architekturę wybiera inżynier — z liczby sygnałów wynika tylko próg "
+        "licencyjny (limit zmiennych). „auto” trzyma się sugestii ze skali projektu."
+    )
+
+    # Pole „liczba terminali" musi wystartować od SUGESTII, nie od zera —
+    # inaczej architektura serwerowa cicho gubiłaby terminale, które
+    # poprzednia (w pełni automatyczna) wersja doliczała sama.
+    # Zapis do session_state PRZED utworzeniem widgetu o tym kluczu jest
+    # dozwolony; odwrotna kolejność rzuca StreamlitAPIException.
+    _, sug_terminale, _ = sugeruj_architekture(balance, wspolczynnik)
+    if "asix_n_terminale" not in st.session_state:
+        st.session_state.asix_n_terminale = sug_terminale
+
+    c1, c2, c3 = st.columns([1.2, 1, 1.4])
+
+    c1.selectbox(
+        "Architektura", ARCHITEKTURY, key="asix_architektura",
+        help="auto = wg skali projektu; stacja = 1 stanowisko; serwer = serwer + terminale.",
+    )
+    c1.checkbox(
+        "Serwer redundantny", key="asix_redundancja",
+        help="Wycena jako 2 licencje serwera. Dotyczy tylko architektury „serwer”.",
+    )
+    c2.number_input(
+        "Terminale operatorskie", min_value=0, max_value=50, step=1,
+        key="asix_n_terminale",
+        help=f"Sugestia ze skali projektu: {sug_terminale}. "
+             "Zmień, jeśli klient wymaga innej liczby stanowisk.",
+    )
+    c3.selectbox(
+        "Dostęp zdalny", DOSTEP_ZDALNY, key="asix_dostep_zdalny",
+        help="RDS = terminal serwera + klienci; WWW = terminal przeglądarkowy.",
+    )
+    c3.number_input(
+        "Klientów zdalnych", min_value=0, max_value=100, step=1, key="asix_n_klientow",
+    )
+    if st.session_state.get("asix_dostep_zdalny") == "WWW":
+        c3.checkbox(
+            "Klienci WWW typu Lite (tylko podgląd)", key="asix_www_lite",
+            help="Lite jest wyraźnie tańszy — wystarcza, gdy zdalny użytkownik "
+                 "ma tylko podglądać, bez sterowania.",
+        )
+
+    return get_asix_arch()
+
+
 def render_device_budget_selector(devices, rabaty: dict) -> None:
     """
     Checkbox-lista urządzeń obiektowych do RĘCZNEGO oznaczenia, które wchodzą
@@ -914,7 +1175,14 @@ def render_device_budget_selector(devices, rabaty: dict) -> None:
     cennik.csv nie ma jeszcze dopasowania po oznaczeniu/opisie (typowy stan
     dla urządzeń obiektowych - patrz core/device_budget.py) - bez tego
     jedynym sposobem na wycenę takiej pozycji było ręczne dopisanie wiersza
-    do cennik.csv poza aplikacją.
+    do cennik.csv poza aplikacją. Tę samą cenę da się wpisać w sekcji 9a,
+    w tabeli kosztorysu - oba miejsca piszą do tego samego stanu.
+
+    Kolumna "Branża" i filtr nad tabelą odsiewają pozycje, które trafiają do
+    wspólnych zestawień obiektowych, ale z automatyką nie mają nic wspólnego
+    (oprawy oświetleniowe, sygnalizatory, gniazda, korytka). Na LIŚCIE WYBORU
+    to był czysty szum - inżynier przewijał przez pozycje, których i tak nigdy
+    nie zaznaczy. Filtr niczego nie usuwa z analizy ani z bilansu I/O.
     """
     if "wycena_akpia_keys" not in st.session_state:
         st.session_state.wycena_akpia_keys = set()
@@ -926,6 +1194,7 @@ def render_device_budget_selector(devices, rabaty: dict) -> None:
         key = device_key(d, i)
         rows.append({
             "Wycena AKPiA": key in st.session_state.wycena_akpia_keys,
+            "Branża": branza_urzadzenia(d.opis),
             "Oznaczenie": d.oznaczenie or "-",
             "Opis": d.opis,
             "Ilość": d.ilosc,
@@ -934,11 +1203,28 @@ def render_device_budget_selector(devices, rabaty: dict) -> None:
         })
     df_sel = pd.DataFrame(rows)
 
+    n_obce = int((df_sel["Branża"] == BRANZA_POZA).sum()) if not df_sel.empty else 0
+    if n_obce:
+        ukryj = st.checkbox(
+            f"Ukryj {n_obce} pozycji spoza branży automatyki "
+            f"(oprawy, sygnalizatory, gniazda, korytka...)",
+            value=True, key="ukryj_poza_akpia",
+            help="Reguła tylko OZNACZA pozycje — nie usuwa ich z analizy i nie zmienia "
+                 "bilansu I/O. Odznacz, jeśli któraś z nich jednak wchodzi w zakres "
+                 "dostawy AKPiA i chcesz ją wycenić.",
+        )
+        if ukryj:
+            df_sel = df_sel[df_sel["Branża"] != BRANZA_POZA].reset_index(drop=True)
+
     edited = st.data_editor(
         df_sel,
         column_config={
             "Wycena AKPiA": st.column_config.CheckboxColumn(
                 "Wycena AKPiA", help="Zaznacz, jeśli to urządzenie ma trafić do kosztorysu AKPiA"
+            ),
+            "Branża": st.column_config.TextColumn(
+                "Branża", help="Rozpoznane po opisie. „poza AKPiA” = typowa pozycja "
+                               "elektryczna/budowlana, nie automatyka.",
             ),
             "Cena ręczna [PLN]": st.column_config.NumberColumn(
                 "Cena ręczna [PLN]", min_value=0.0, step=1.0,
@@ -947,21 +1233,34 @@ def render_device_budget_selector(devices, rabaty: dict) -> None:
             ),
             "_key": None,  # ukrywa kolumnę techniczną w UI
         },
-        disabled=["Oznaczenie", "Opis", "Ilość"],
+        disabled=["Branża", "Oznaczenie", "Opis", "Ilość"],
         hide_index=True,
         width="stretch",
         key="device_budget_editor",
     )
 
-    # Synchronizacja stanu na podstawie tego, co inżynier zaznaczył/wpisał w tabeli
-    st.session_state.wycena_akpia_keys = set(
-        edited.loc[edited["Wycena AKPiA"], "_key"]
+    # Synchronizacja stanu na podstawie tego, co inżynier zaznaczył/wpisał.
+    #
+    # SCALANIE, NIE NADPISANIE — i to jest tu istotne. Poprzednia wersja
+    # odbudowywała oba słowniki od zera z całej tabeli, co było poprawne tylko
+    # dopóki tabela pokazywała WSZYSTKIE urządzenia. Po dodaniu filtra branży
+    # (i przy cenie wpisanej w sekcji 9a) takie nadpisanie kasowałoby
+    # zaznaczenia i ceny pozycji, których akurat nie widać na ekranie.
+    # Ruszamy więc wyłącznie klucze obecne w wyświetlonych wierszach.
+    widoczne = set(edited["_key"])
+    zaznaczone = set(edited.loc[edited["Wycena AKPiA"], "_key"])
+    st.session_state.wycena_akpia_keys = (
+        (st.session_state.wycena_akpia_keys - widoczne) | zaznaczone
     )
-    st.session_state.akpia_price_overrides = {
-        row["_key"]: float(row["Cena ręczna [PLN]"])
-        for _, row in edited.iterrows()
-        if pd.notna(row["Cena ręczna [PLN]"])
-    }
+
+    overrides = dict(st.session_state.akpia_price_overrides)
+    for _, row in edited.iterrows():
+        cena = row["Cena ręczna [PLN]"]
+        if pd.notna(cena):
+            overrides[row["_key"]] = float(cena)
+        else:
+            overrides.pop(row["_key"], None)
+    st.session_state.akpia_price_overrides = overrides
 
     dev_budget = build_device_budget(
         devices, st.session_state.wycena_akpia_keys, rabaty=rabaty,
@@ -984,6 +1283,9 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
         st.session_state.devices = updated_devices
         st.rerun()
     devices = updated_devices
+
+    if render_manual_device_form(devices):
+        st.rerun()
 
     render_undecided_signal_resolver(devices)
 
@@ -1046,13 +1348,15 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
               f"(śr. trasa {cable_length}m, naddatek +15%)")
 
     st.subheader("5. SCADA ASIX")
-    asix = select_asix(balance, wspolczynnik=asix_factor)
+    arch = render_asix_architecture_controls(balance, asix_factor)
+    asix = select_asix(balance, wspolczynnik=asix_factor, **arch)
     scada_cols = st.columns(3)
     scada_cols[0].metric("Sygnałów I/O", asix.zmienne_io)
     scada_cols[1].metric("Zmiennych procesowych", asix.zmienne_obliczone,
                          f"×{asix.wspolczynnik}")
     scada_cols[2].metric("Pakiet licencyjny", asix.prog_nazwa)
-    st.info(f"💡 Sugestia architektury: {asix.sugestia_opis}")
+    st.success(f"**Przyjęta architektura:** {opis_architektury(asix)}")
+    st.caption(f"💡 Sugestia ze skali projektu (punkt wyjścia): {asix.sugestia_opis}")
     if asix.items:
         df_asix = pd.DataFrame([
             {"Nr katalogowy": it.nr_katalogowy, "Nazwa": it.nazwa,
@@ -1106,19 +1410,27 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
         st.caption("Brak dodanych paneli HMI — poprawny stan, jeśli projekt ich nie wymaga.")
 
     st.subheader("7. Szafa sterownicza (+SAKG)")
+    st.caption(
+        "Kompletna rozdzielnica: aparatura na szynie + obudowa, korytka, szyna TH35, "
+        "okablowanie wewnętrzne, zabezpieczenia i wyposażenie obudowy. "
+        "Obudowa dobierana z sumy szerokości aparatów — patrz kolumna „Reguła”."
+    )
     cab_sel = select_cabinet(balance, sel)
     df_cab_items = pd.DataFrame([
-        {"Ilość": it.ilosc, "Nr katalogowy": it.nr_katalogowy,
-         "Nazwa": it.nazwa, "Reguła": it.uwaga}
+        {"Ilość": it.ilosc, "Jedn.": it.jednostka, "Nr katalogowy": it.nr_katalogowy,
+         "Nazwa": it.nazwa, "Grupa rab.": it.grupa_rabatowa, "Reguła": it.uwaga}
         for it in cab_sel.items
     ])
     st.dataframe(df_cab_items, width="stretch")
     pw = st.columns(4)
-    pw[0].metric("Karty PLC", f"{cab_sel.prad_karty_ma} mA")
-    pw[1].metric("Przekaźniki", f"{cab_sel.prad_przekazniki_ma} mA")
-    pw[2].metric("Przetworniki", f"{cab_sel.prad_przetworniki_ma} mA")
-    pw[3].metric("Zasilacz 24V", f"{cab_sel.zasilacz_a} A",
+    pw[0].metric("Zasilacz 24V", f"{cab_sel.zasilacz_a} A",
                  f"bilans {cab_sel.prad_z_zapasem_a} A")
+    pw[1].metric("Zabudowa na szynie", f"{cab_sel.dlugosc_szyn_mm:.0f} mm",
+                 f"{cab_sel.obudowa_rzedow} rzędów")
+    pw[2].metric("Obudowa", cab_sel.obudowa.replace("Obudowa ", ""))
+    pw[3].metric("Pobór 24V DC", f"{cab_sel.prad_total_ma} mA",
+                 f"karty {cab_sel.prad_karty_ma} / przek. {cab_sel.prad_przekazniki_ma} "
+                 f"/ przetw. {cab_sel.prad_przetworniki_ma} mA")
     for w in cab_sel.warnings:
         st.info(f"ℹ {w}")
 
@@ -1161,32 +1473,10 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
 
     st.subheader("9a. Kosztorys urządzeń AKPiA (wybór ręczny)")
     st.caption("Pozycje zaznaczone w sekcji 1a — osobno od sprzętu sterowniczego, "
-               "bo dotyczą urządzeń obiektowych (np. przetworników), a nie kart PLC/szafy/SCADA.")
-    dev_budget = build_device_budget(
-        devices, st.session_state.get("wycena_akpia_keys", set()), rabaty=rabaty,
-        price_overrides=st.session_state.get("akpia_price_overrides", {}),
-    )
-    if dev_budget.items:
-        df_dev_budget = pd.DataFrame([
-            {
-                "Oznaczenie": it.oznaczenie,
-                "Opis": it.opis,
-                "Ilość": it.ilosc,
-                "Cena kat. [PLN]": f"{it.cena_katalogowa:.2f}" if it.cena_katalogowa else "BRAK",
-                "Rabat [%]": f"{it.rabat_pct:.0f}",
-                "Wartość netto [PLN]": f"{it.wartosc_netto:.2f}" if it.wartosc_netto else "-",
-            }
-            for it in dev_budget.items
-        ])
-        st.dataframe(df_dev_budget, width="stretch")
-        sum_cols2 = st.columns(2)
-        sum_cols2[0].metric("Suma katalogowa (AKPiA)", f"{dev_budget.suma_katalogowa:,.2f} PLN")
-        sum_cols2[1].metric("Suma netto (AKPiA)", f"{dev_budget.suma_netto:,.2f} PLN")
-        if dev_budget.brak_ceny:
-            st.warning(f"⚠ {len(dev_budget.brak_ceny)} pozycji bez ceny katalogowej — "
-                       "cennik nie zawiera jeszcze urządzeń obiektowych, uzupełnij ręcznie.")
-    else:
-        st.caption("Brak zaznaczonych urządzeń — sekcja 1a pozwala je dodać.")
+               "bo dotyczą urządzeń obiektowych (np. przetworników), a nie kart PLC/szafy/SCADA. "
+               "**Cenę katalogową wpisujesz wprost w tabeli** — cennik nie zawiera urządzeń "
+               "obiektowych, więc bez wpisania ceny pozycja zostaje jako „BRAK”.")
+    dev_budget = render_device_budget_table(devices, rabaty)
 
     st.subheader("10. Weryfikacja kompletności oferty")
     # Reużywamy sel/cab/cab_sel/asix/budget policzone wyżej (sekcje 3-9) —
@@ -1208,8 +1498,15 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
                    "Ostateczna decyzja należy do inżyniera.")
 
     st.subheader("11. Pobierz dokumenty")
-    word_bio = create_word_report(devices, balance, project_label, platforma, rabaty, st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()))
-    excel_bio = create_devices_excel(devices, balance, platforma, rabaty, cable_length, asix_factor, st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()))
+    # price_overrides MUSI tu trafić: bez niego ręcznie wpisane ceny urządzeń
+    # AKPiA widać było na ekranie, ale w POBRANYM Wordzie/Excelu te same
+    # pozycje wychodziły jako "BRAK" - czyli dokument wysyłany klientowi był
+    # zaniżony względem tego, co inżynier przed chwilą zatwierdził.
+    # (Ścieżka zapisu do historii, save_outputs_to_disk, przekazywała je
+    # poprawnie od początku - rozjeżdżały się tylko przyciski pobierania.)
+    _overrides = st.session_state.get("akpia_price_overrides", {})
+    word_bio = create_word_report(devices, balance, project_label, platforma, rabaty, st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()), price_overrides=_overrides)
+    excel_bio = create_devices_excel(devices, balance, platforma, rabaty, cable_length, asix_factor, st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()), price_overrides=_overrides)
     # sel/cab_sel/asix/budget/dev_budget policzone wyżej (sekcje 3, 7, 5, 9, 9a) -
     # PDF dostaje te same obiekty zamiast dobierać PLC/szafę/SCADA/kosztorys
     # jeszcze raz od zera.

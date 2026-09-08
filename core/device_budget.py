@@ -48,6 +48,11 @@ class DeviceBudgetItem:
     rabat_pct: float = 0.0
     cena_netto_jed: float | None = None
     wartosc_netto: float | None = None
+    # Klucz urządzenia (device_key), z którego ta pozycja powstała. Pozwala
+    # UI zapisać ręcznie wpisaną cenę WPROST w tabeli kosztorysu - bez niego
+    # jedynym miejscem na cenę była lista wyboru w sekcji 1a, czyli nie tam,
+    # gdzie inżynier patrzy na kosztorys i widzi "BRAK".
+    klucz: str = ""
 
 
 @dataclass
@@ -151,6 +156,7 @@ def build_device_budget(
             rabat_pct=rabat,
             cena_netto_jed=cena_netto,
             wartosc_netto=wartosc,
+            klucz=key,
         ))
 
     return sel
