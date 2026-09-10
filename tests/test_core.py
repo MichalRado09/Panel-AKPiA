@@ -1588,3 +1588,49 @@ def test_zasilacz_bez_znanego_numeru_ostrzega_zamiast_zmyslac():
     if cab.zasilacz_a in ZASILACZE_KATALOG:
         pytest.skip("ten bilans nie wychodzi poza skatalogowane zasilacze")
     assert any("bez numeru katalogowego" in w for w in cab.warnings)
+
+
+def test_kazda_pozycja_ktora_dobor_potrafi_wygenerowac_ma_cene_w_cenniku():
+    """
+    Cennik musi pokrywać WSZYSTKO, co dobór potrafi zaproponować — inaczej
+    pozycja cicho wypada z sumy i oferta jest zaniżona.
+
+    Ten test wyłapuje typową lukę: ktoś dokłada kartę do katalogu platformy
+    albo nowy rozmiar obudowy i zapomina o wierszu w cenniku. Bez ceny pozycja
+    dalej się pokaże, ale nie wejdzie do kwoty.
+
+    W środowisku bez realnego cennik.csv (świeży klon publicznego repo) test
+    jest pomijany, nie failuje fałszywie.
+    """
+    from core.budget import load_cennik
+    from core.plc_selector import PLATFORMY
+    from core.cables import DOMYSLNE_KABLE, PROGI_KABLA_FALOWNIKA
+    from core.cabinet import OBUDOWY
+
+    cennik = load_cennik()
+    if not any(v.get("cena") for v in cennik.values()):
+        pytest.skip("brak realnego cennik.csv w tym środowisku (plik z danymi handlowymi)")
+
+    bal = _mk_balance(80, 24, 56, 16)
+    oczekiwane: set[str] = set()
+
+    for platforma in PLATFORMY:
+        for it in select_plc(bal, platforma).items:
+            oczekiwane.add(it.nr)
+    for it in _select_cabinet(bal, select_plc(bal, "Beckhoff CX9020")).items:
+        oczekiwane.add(it.nr_katalogowy)
+    for nazwa, _dl, _rz in OBUDOWY:
+        oczekiwane.add(nazwa)
+    for kabel in DOMYSLNE_KABLE.values():
+        oczekiwane.add(kabel["typ"])
+    for _kw, przekroj in PROGI_KABLA_FALOWNIKA:
+        oczekiwane.add(przekroj)
+
+    bez_ceny = sorted(
+        nr for nr in oczekiwane
+        if nr not in cennik or cennik[nr].get("cena") is None
+    )
+    assert not bez_ceny, (
+        "pozycje, które dobór potrafi wygenerować, a cennik ich nie wycenia "
+        f"(wypadną z sumy): {bez_ceny}"
+    )
