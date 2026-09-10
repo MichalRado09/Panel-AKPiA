@@ -134,3 +134,23 @@ def test_zasilacz_ebus_spada_na_regule_zastepcza_bez_danych_o_poborze():
     assert any("ZGRUBNY SZACUNEK" in w for w in sel.warnings), (
         "bez danych o poborze dobór musi się przyznać, że to tylko szacunek"
     )
+
+
+def test_wariant_raportuje_liczbe_pozycji_bez_ceny():
+    """
+    Bez tej liczby tabela porównania potrafi wprowadzić w błąd: platforma,
+    której większość pozycji NIE MA jeszcze ceny w cenniku, wychodzi w niej
+    najtaniej, bo sumuje się tylko to, co ma cenę. Realny przypadek: świeżo
+    dodany S7-1500 pokazywał kwotę niższą od Beckhoffa, mając 7 z 10 pozycji
+    bez ceny.
+    """
+    variants = compare_variants(_bal())
+    by_plat = {v.platforma: v for v in variants}
+    s7 = by_plat.get("Siemens S7-1500")
+    assert s7 is not None
+    # Suma i liczba braków muszą być spójne: kwota bliska zeru przy komplecie
+    # pozycji z cenami byłaby sprzecznością.
+    if s7.suma_netto == 0:
+        assert s7.brak_ceny > 0
+    for v in variants:
+        assert v.brak_ceny >= 0

@@ -86,3 +86,6 @@ PLC;Siemens;6ES7531-7KF00-0AB0;Modul wejsc analogowych 8x AI U/I/RTD/TC ST;szt.;
 PLC;Siemens;6ES7532-5HD00-0AB0;Modul wyjsc analogowych 4x AQ U/I ST;szt.;;PLN;SIEMENS;
 PLC;Siemens;6ES7592-1BM00-0XB0;Zlacze czolowe 40-pin, srubowe (do modulu I/O);szt.;;PLN;SIEMENS;
 PLC;Siemens;6ES7590-1AE80-0AA0;Szyna profilowa S7-1500, 482 mm;szt.;;PLN;SIEMENS;
+KABLE;Bitner;BiTservo®3plus 2XSLCH-J 3G2,5+3G0,5;Kabel silnikowy do falownika (do 4 kW);m;;PLN;KABLE;
+KABLE;Bitner;BiTservo®3plus 2XSLCH-J 3G6+3G1,5;Kabel silnikowy do falownika (do 15 kW);m;;PLN;KABLE;
+KABLE;Bitner;BiTservo®3plus 2XSLCH-J 3G10+3G1,5;Kabel silnikowy do falownika (do 30 kW);m;;PLN;KABLE;

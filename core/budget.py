@@ -170,6 +170,95 @@ def _round_netto(katalogowa: float, rabat_pct: float) -> float:
     return round(katalogowa * (1 - rabat_pct / 100.0), 2)
 
 
+@dataclass
+class PozycjaOferty:
+    """
+    Jedna pozycja oferty, sprowadzona do wspólnego kształtu.
+
+    Poszczególne moduły doboru nazywają pola inaczej (PlcItem.nr kontra
+    CabinetItem.nr_katalogowy kontra CableItem.typ_kabla), a calculate_budget
+    oczekuje jednego kształtu. Ta klasa jest tym tłumaczeniem.
+    """
+    nr: str
+    opis: str
+    ilosc: float
+    grupa_rabatowa: str
+    zrodlo: str = ""          # PLC / Szafa / SCADA / Kable / HMI
+    jednostka: str = "szt."
+
+
+def zbierz_pozycje_oferty(plc_sel=None, cabinet_sel=None, asix_sel=None,
+                          cable_sel=None, hmi_sel=None) -> list[PozycjaOferty]:
+    """
+    Wszystko, co ma trafić do kosztorysu, w JEDNYM miejscu.
+
+    DLACZEGO TO ISTNIEJE: kosztorys był składany osobno w trzech miejscach
+    i każde liczyło CO INNEGO:
+      - sekcja 9 na ekranie ... sam sterownik,
+      - raport Word ............ sam sterownik,
+      - eksport Excel .......... sterownik + SCADA + szafa + HMI.
+    Kable nie wchodziły NIGDZIE, mimo że cennik ma ich ceny za metr, a przy
+    realnym projekcie to tysiące metrów.
+
+    Skutek był taki, że "Suma netto" na ekranie nie była ofertą, tylko ceną
+    samego sterownika - a inżynier, który uzupełnił cennik o obudowę, nie
+    zobaczyłby po tym ŻADNEJ zmiany w tej sumie i miałby prawo uznać, że
+    cennik nie działa.
+
+    Trzy miejsca składające to samo z ręki musiały się rozjechać. Teraz jest
+    jedno źródło; każda z sekcji przekazuje to, co ma, a czego nie ma (None),
+    to po prostu nie wchodzi.
+
+    zrodlo pozwala pokazać w tabeli, z której części oferty jest pozycja -
+    bez tego kosztorys jest jedną długą listą bez podziału.
+    """
+    pozycje: list[PozycjaOferty] = []
+
+    if plc_sel is not None:
+        for it in plc_sel.items:
+            pozycje.append(PozycjaOferty(
+                nr=it.nr, opis=it.opis, ilosc=it.ilosc,
+                grupa_rabatowa=it.grupa_rabatowa, zrodlo="PLC",
+            ))
+
+    if cabinet_sel is not None:
+        for it in cabinet_sel.items:
+            pozycje.append(PozycjaOferty(
+                nr=it.nr_katalogowy, opis=it.nazwa, ilosc=it.ilosc,
+                grupa_rabatowa=it.grupa_rabatowa or "APARATURA",
+                zrodlo="Szafa", jednostka=it.jednostka,
+            ))
+
+    if asix_sel is not None:
+        for it in asix_sel.items:
+            pozycje.append(PozycjaOferty(
+                nr=it.nr_katalogowy, opis=it.nazwa, ilosc=it.ilosc,
+                grupa_rabatowa=it.grupa_rabatowa or "ASIX", zrodlo="SCADA",
+            ))
+
+    if cable_sel is not None:
+        for it in cable_sel.items:
+            # Ilość kabla to METRAŻ, nie sztuki - cennik ma ceny za metr.
+            pozycje.append(PozycjaOferty(
+                nr=it.typ_kabla, opis=it.opis, ilosc=it.metraz_m,
+                grupa_rabatowa=it.grupa_rabatowa or "KABLE",
+                zrodlo="Kable", jednostka="m",
+            ))
+
+    if hmi_sel is not None:
+        for it in hmi_sel.items:
+            # Numerem katalogowym jest MODEL panelu, nie sztuczne "HMI-1":
+            # dzięki temu wpis w cenniku pod nazwą modelu w ogóle ma szansę
+            # się dopasować.
+            opis = f"{it.nazwa} ({it.lokalizacja})" if it.lokalizacja else it.nazwa
+            pozycje.append(PozycjaOferty(
+                nr=it.nazwa, opis=opis, ilosc=it.ilosc,
+                grupa_rabatowa=it.grupa_rabatowa or "APARATURA", zrodlo="HMI",
+            ))
+
+    return pozycje
+
+
 def calculate_budget(
     plc_items: list,
     rabaty: dict[str, float] | None = None,
@@ -206,10 +295,14 @@ def calculate_budget(
             wartosc = round(cena_netto * plc.ilosc, 2)
 
         budget.items.append(BudgetItem(
-            kategoria="PLC",
+            # Kategoria z pozycji, jeśli ją niesie (PozycjaOferty.zrodlo:
+            # PLC / Szafa / SCADA / Kable / HMI). Zaszyte "PLC" dla wszystkiego
+            # było prawdą tylko dopóki kosztorys obejmował sam sterownik.
+            kategoria=getattr(plc, "zrodlo", "") or "PLC",
             nr_katalogowy=nr,
             nazwa=plc.opis,
             ilosc=plc.ilosc,
+            jednostka=getattr(plc, "jednostka", "szt."),
             cena_katalogowa=cena_kat,
             grupa_rabatowa=grupa,
             rabat_pct=rabat,
