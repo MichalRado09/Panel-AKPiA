@@ -52,6 +52,27 @@ POBORY_MA = {
 # Dostępne zasilacze 24V DC [A] — typowy szereg
 ZASILACZE = [5, 10, 20, 40]
 
+# Numery katalogowe zasilaczy. Klucz = prąd [A], wartość = numer katalogowy.
+#
+# DLACZEGO NUMER, A NIE OPIS: pozycja trafia do kosztorysu i jest szukana
+# w cenniku PO NUMERZE KATALOGOWYM. Dobór generował wcześniej opisową nazwę
+# ("Zasilacz 24V DC 10A"), której w cenniku nie ma - są tam realne numery
+# Mean Well - więc zasilacz NIGDY nie dostawał ceny i po cichu wypadał z sumy.
+#
+# Numery są wpisane wprost, a nie liczone wzorem. Poprzednia wersja skladała
+# je jako "NDR-{prąd*10}-24", co dawało numery nieistniejące albo o złej mocy
+# (NDR-50-24 to ok. 2 A, nie 5 A) - dobór ma podawać część, którą da się
+# zamówić, albo nie podawać żadnej.
+#
+# Powyżej 10 A świadomie brak numeru: seria NDR kończy się na 480 W (20 A),
+# a przy większych prądach realnie schodzi się na inną serię albo dwa
+# zasilacze - to decyzja projektanta, nie wzór. Taka pozycja pokaże
+# "BRAK CENY", co jest uczciwsze niż zmyślony numer.
+ZASILACZE_KATALOG = {
+    5:  "NDR-120-24",
+    10: "NDR-240-24",
+}
+
 # Zapas mocy zasilacza (dobieramy z zapasem 30%)
 ZAPAS_ZASILACZA = 1.30
 
@@ -245,11 +266,20 @@ def select_cabinet(balance, plc_selection=None,
         )
 
     if sel.zasilacz_a > 0:
+        nr_zasilacza = ZASILACZE_KATALOG.get(sel.zasilacz_a)
         sel.items.append(CabinetItem(
-            f"Zasilacz 24V DC {sel.zasilacz_a}A",
-            f"Zasilacz 24V DC {sel.zasilacz_a}A (np. Mean Well NDR-{sel.zasilacz_a*10}-24)",
+            nr_zasilacza or f"Zasilacz 24V DC {sel.zasilacz_a}A",
+            f"Zasilacz 24V DC {sel.zasilacz_a}A"
+            + (f" (Mean Well {nr_zasilacza})" if nr_zasilacza else ""),
             1, uwaga=f"bilans {sel.prad_z_zapasem_a}A (z zapasem 30%)"
         ))
+        if not nr_zasilacza:
+            sel.warnings.append(
+                f"Zasilacz {sel.zasilacz_a}A bez numeru katalogowego - przy tym "
+                f"prądzie dobór zależy od serii i od tego, czy nie lepiej podzielić "
+                f"zasilanie na dwie sztuki. Wybierz model i dopisz go do cennika, "
+                f"inaczej pozycja zostanie bez ceny."
+            )
 
     sel.warnings.append(
         "Reguły doboru złączek wyprowadzone z projektu DPK2 Wujek — "

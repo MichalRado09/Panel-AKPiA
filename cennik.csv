@@ -39,7 +39,7 @@ APARATURA;Rittal;SE 5832.600;Obudowa szafy sterowniczej;szt.;4900;PLN;APARATURA;
 KABLE;Bitner;BiT 750®H 4x1;Kabel sterowniczy 4x1mm2;m;5;PLN;KABLE;
 KABLE;Bitner;BiT 750®H 3G1,5;Kabel sterowniczy 3G1,5mm2;m;6;PLN;KABLE;
 KABLE;Bitner;BiT 750®CH 2x1;Kabel ekranowany 2x1mm2 (analogi);m;7;PLN;KABLE;
-KABLE;Bitner;BiTservo®3plus 2XSLCH-J 3G2,5+3G1,5;Kabel silnikowy do falownika;m;;PLN;KABLE;
+KABLE;Bitner;BiTservo®3plus 2XSLCH-J 3G2,5+3G1,5;Kabel silnikowy do falownika;m;17;PLN;KABLE;
 KABLE;Lapp;ETHERLINE LAN Cat.7 S/FTP;Kabel sieciowy Cat.7;m;9;PLN;KABLE;
 SCADA;ASKOM;ASIX-WA128W+1R PM;Stacja operatorska, limit 128 zm.;szt.;4350;PLN;ASIX;Cennik ASIX 03/2026
 SCADA;ASKOM;ASIX-WA256W+1R PM;Stacja operatorska, limit 256 zm.;szt.;6010;PLN;ASIX;Cennik ASIX 03/2026
@@ -60,22 +60,22 @@ SCADA;ASKOM;AsRDSCAL;Rozszerzenie terminala RDS o kolejnego Klienta;szt.;4350;PL
 SCADA;ASKOM;As4www+1CAL;Terminal WWW z 1 Klientem pełnym;szt.;4350;PLN;ASIX;Cennik ASIX 03/2026
 SCADA;ASKOM;As4www1CAL-Lite;Terminal WWW +1 Klient Lite;szt.;1640;PLN;ASIX;Cennik ASIX 03/2026
 SCADA;ASKOM;As4www1CAL;Terminal WWW +1 Klient pełny;szt.;3750;PLN;ASIX;Cennik ASIX 03/2026
-SZAFA;;Obudowa wisząca 600x600x250;Obudowa rozdzielnicy z płytą montażową;szt.;;PLN;OBUDOWY;
-SZAFA;;Szyna montażowa TH35;Szyna montażowa TH35 (DIN);m;;PLN;OBUDOWY;
-SZAFA;;Korytko grzebieniowe 40x60;Korytko grzebieniowe (prowadzenie przewodów);m;;PLN;OBUDOWY;
-SZAFA;;Przewód LgY 1,0 mm2;Przewód wewnętrzny LgY 1,0 mm2 (obwody sygnałowe);m;;PLN;KABLE;
-SZAFA;;Przewód LgY 2,5 mm2;Przewód wewnętrzny LgY 2,5 mm2 (obwody 230V i zasilacza);m;;PLN;KABLE;
-SZAFA;;Rozłącznik główny 3P 25A;Rozłącznik główny z napędem drzwiowym;szt.;;PLN;APARATURA;
-SZAFA;;Wyłącznik nadprądowy B10 1P+N;Zabezpieczenie obwodu zasilacza 24V DC;szt.;;PLN;APARATURA;
-SZAFA;;Wyłącznik nadprądowy B10 1P+N (gniazdo/oświetlenie);Zabezpieczenie gniazda serwisowego i oświetlenia szafy;szt.;;PLN;APARATURA;
+SZAFA;;Obudowa wisząca 600x600x250;Obudowa rozdzielnicy z płytą montażową;szt.;620;PLN;OBUDOWY;
+SZAFA;;Szyna montażowa TH35;Szyna montażowa TH35 (DIN);m;15;PLN;OBUDOWY;
+SZAFA;;Korytko grzebieniowe 40x60;Korytko grzebieniowe (prowadzenie przewodów);m;35;PLN;OBUDOWY;
+SZAFA;;Przewód LgY 1,0 mm2;Przewód wewnętrzny LgY 1,0 mm2 (obwody sygnałowe);m;2;PLN;KABLE;
+SZAFA;;Przewód LgY 2,5 mm2;Przewód wewnętrzny LgY 2,5 mm2 (obwody 230V i zasilacza);m;3,3;PLN;KABLE;
+SZAFA;;Rozłącznik główny 3P 25A;Rozłącznik główny z napędem drzwiowym;szt.;240;PLN;APARATURA;
+SZAFA;;Wyłącznik nadprądowy B10 1P+N;Zabezpieczenie obwodu zasilacza 24V DC;szt.;30;PLN;APARATURA;
+SZAFA;;Wyłącznik nadprądowy B10 1P+N (gniazdo/oświetlenie);Zabezpieczenie gniazda serwisowego i oświetlenia szafy;szt.;30;PLN;APARATURA;
 SZAFA;;Oświetlenie szafy z wyłącznikiem drzwiowym;Oprawa oświetleniowa szafy z wyłącznikiem drzwiowym;szt.;;PLN;APARATURA;
-SZAFA;;Gniazdo serwisowe 230V;Gniazdo serwisowe 230V na szynę TH35;szt.;;PLN;APARATURA;
-SZAFA;;Obudowa wisząca 800x1200x300;Obudowa rozdzielnicy z płytą montażową;szt.;;PLN;OBUDOWY;
-SZAFA;;Wentylator z filtrem + termostat;Wentylacja wymuszona z termostatem;szt.;;PLN;APARATURA;
-SZAFA;;Obudowa stojąca 1000x2000x400;Obudowa rozdzielnicy z płytą montażową;szt.;;PLN;OBUDOWY;
-SZAFA;;Obudowa wisząca 600x800x250;Obudowa rozdzielnicy z płytą montażową;szt.;;PLN;OBUDOWY;
-SZAFA;;Obudowa wisząca 800x1000x300;Obudowa rozdzielnicy z płytą montażową;szt.;;PLN;OBUDOWY;
-SZAFA;;Obudowa stojąca 800x2000x400;Obudowa rozdzielnicy z płytą montażową;szt.;;PLN;OBUDOWY;
+SZAFA;;Gniazdo serwisowe 230V;Gniazdo serwisowe 230V na szynę TH35;szt.;20;PLN;APARATURA;
+SZAFA;;Obudowa wisząca 800x1200x300;Obudowa rozdzielnicy z płytą montażową;szt.;2700;PLN;OBUDOWY;
+SZAFA;;Wentylator z filtrem + termostat;Wentylacja wymuszona z termostatem;szt.;300;PLN;APARATURA;
+SZAFA;;Obudowa stojąca 1000x2000x400;Obudowa rozdzielnicy z płytą montażową;szt.;3800;PLN;OBUDOWY;
+SZAFA;;Obudowa wisząca 600x800x250;Obudowa rozdzielnicy z płytą montażową;szt.;1000;PLN;OBUDOWY;
+SZAFA;;Obudowa wisząca 800x1000x300;Obudowa rozdzielnicy z płytą montażową;szt.;1700;PLN;OBUDOWY;
+SZAFA;;Obudowa stojąca 800x2000x400;Obudowa rozdzielnicy z płytą montażową;szt.;3000;PLN;OBUDOWY;
 PLC;Siemens;6ES7513-1AL02-0AB0;CPU 1513-1 PN;szt.;;PLN;SIEMENS;
 PLC;Siemens;6EP1332-4BA00;Zasilacz systemowy PM 1507 24V DC / 3A;szt.;;PLN;SIEMENS;
 PLC;Siemens;6ES7541-1AB00-0AB0;Modul komunikacji szeregowej CM PtP RS422/485 HF;szt.;;PLN;SIEMENS;
@@ -85,3 +85,6 @@ PLC;Siemens;6ES7531-7KF00-0AB0;Modul wejsc analogowych 8x AI U/I/RTD/TC ST;szt.;
 PLC;Siemens;6ES7532-5HD00-0AB0;Modul wyjsc analogowych 4x AQ U/I ST;szt.;;PLN;SIEMENS;
 PLC;Siemens;6ES7592-1BM00-0XB0;Zlacze czolowe 40-pin, srubowe (do modulu I/O);szt.;;PLN;SIEMENS;
 PLC;Siemens;6ES7590-1AE80-0AA0;Szyna profilowa S7-1500, 482 mm;szt.;;PLN;SIEMENS;
+KABLE;Bitner;BiTservo®3plus 2XSLCH-J 3G2,5+3G0,5;Kabel silnikowy do falownika (do 4 kW);m;;PLN;KABLE;
+KABLE;Bitner;BiTservo®3plus 2XSLCH-J 3G6+3G1,5;Kabel silnikowy do falownika (do 15 kW);m;;PLN;KABLE;
+KABLE;Bitner;BiTservo®3plus 2XSLCH-J 3G10+3G1,5;Kabel silnikowy do falownika (do 30 kW);m;;PLN;KABLE;

@@ -1493,3 +1493,98 @@ def test_cena_pusta_lub_niepoprawna_to_brak_ceny():
     from core.budget import _parse_cena
     for wartosc in ("", "   ", None, "do ustalenia", "-"):
         assert _parse_cena(wartosc) is None, wartosc
+
+
+# --- kosztorys: JEDNA oferta dla ekranu, Worda i Excela -----------------------
+# Kosztorys był składany osobno w trzech miejscach i każde liczyło co innego:
+# ekran i Word - sam sterownik, Excel - sterownik + SCADA + szafa + HMI.
+# Kable nie wchodziły nigdzie, mimo że cennik ma ich ceny za metr. Na bilansie
+# DPK2 Wujek "Suma netto" na ekranie pokazywała 25 tys. zł tam, gdzie pełna
+# oferta to ok. 67 tys. zł.
+
+from core.budget import zbierz_pozycje_oferty
+from core.cabinet import select_cabinet as _select_cabinet, ZASILACZE_KATALOG
+from core.cables import select_cables as _select_cables
+from core.scada_asix import select_asix as _select_asix
+
+
+class _DevKabel:
+    def __init__(self, typy, ilosc=1):
+        self.sygnaly = [{"typ": t} for t in typy]
+        self.ilosc = ilosc
+        self.moc_kw = None
+
+
+def _pelna_oferta(bal):
+    sel = select_plc(bal, "Beckhoff CX9020")
+    devs = [_DevKabel(["AI"], 40), _DevKabel(["DI"], 20), _DevKabel(["DO"], 12)]
+    return zbierz_pozycje_oferty(
+        plc_sel=sel,
+        cabinet_sel=_select_cabinet(bal, sel),
+        asix_sel=_select_asix(bal),
+        cable_sel=_select_cables(devs, srednia_trasa_m=46),
+    )
+
+
+def test_oferta_obejmuje_wszystkie_czesci():
+    bal = _mk_balance(80, 24, 56, 16)
+    czesci = {p.zrodlo for p in _pelna_oferta(bal)}
+    assert czesci == {"PLC", "Szafa", "SCADA", "Kable"}
+
+
+def test_oferta_jest_wyraznie_wieksza_niz_sam_sterownik():
+    """
+    Regresja na sedno błędu: suma pokazywana inżynierowi MUSI obejmować
+    więcej niż sterownik. Bez tego uzupełnienie cennika o obudowę nie
+    zmieniałoby wyświetlanej kwoty ani o złotówkę.
+    """
+    bal = _mk_balance(80, 24, 56, 16)
+    sam_plc = calculate_budget(select_plc(bal, "Beckhoff CX9020").items, rabaty={})
+    calosc = calculate_budget(_pelna_oferta(bal), rabaty={})
+    if sam_plc.suma_netto == 0:
+        pytest.skip("brak realnego cennik.csv w tym środowisku")
+    assert calosc.suma_netto > sam_plc.suma_netto * 1.5
+
+
+def test_kable_licza_sie_po_metrazu_nie_po_sztukach():
+    bal = _mk_balance(80, 24, 56, 16)
+    kable = [p for p in _pelna_oferta(bal) if p.zrodlo == "Kable"]
+    assert kable, "kable muszą wejść do oferty"
+    for p in kable:
+        assert p.jednostka == "m"
+        assert p.ilosc > 1          # metraż, nie liczba kabli
+        assert p.grupa_rabatowa == "KABLE"
+
+
+def test_pozycja_niesie_czesc_oferty_jako_kategorie():
+    """Kategoria „PLC" dla wszystkiego była prawdą tylko dopóki kosztorys
+    obejmował sam sterownik."""
+    bal = _mk_balance(16, 8, 8, 4)
+    b = calculate_budget(_pelna_oferta(bal), rabaty={})
+    assert {it.kategoria for it in b.items} == {"PLC", "Szafa", "SCADA", "Kable"}
+
+
+def test_zasilacz_ma_numer_katalogowy_ktory_lapie_sie_w_cenniku():
+    """
+    REGRESJA: dobór generował opisową nazwę („Zasilacz 24V DC 10A"), a cennik
+    trzyma zasilacze pod realnymi numerami Mean Well - więc zasilacz NIGDY nie
+    dostawał ceny i po cichu wypadał z sumy. Dodatkowo poprzedni kod składał
+    numer wzorem „NDR-{prąd*10}-24", co dawało części o złej mocy
+    (NDR-50-24 to ok. 2 A, nie 5 A).
+    """
+    bal = _mk_balance(80, 24, 56, 16)
+    cab = _select_cabinet(bal, select_plc(bal, "Beckhoff CX9020"))
+    assert cab.zasilacz_a == 10
+    nry = {it.nr_katalogowy for it in cab.items}
+    assert ZASILACZE_KATALOG[10] in nry
+    assert "Zasilacz 24V DC 10A" not in nry
+
+
+def test_zasilacz_bez_znanego_numeru_ostrzega_zamiast_zmyslac():
+    """Powyżej 10 A nie mamy pewnego numeru - dobór ma to powiedzieć,
+    a nie wstawić zmyśloną część."""
+    bal = _mk_balance(600, 400, 400, 200)
+    cab = _select_cabinet(bal, select_plc(bal, "Beckhoff CX9020"))
+    if cab.zasilacz_a in ZASILACZE_KATALOG:
+        pytest.skip("ten bilans nie wychodzi poza skatalogowane zasilacze")
+    assert any("bez numeru katalogowego" in w for w in cab.warnings)

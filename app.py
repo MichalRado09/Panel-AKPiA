@@ -22,7 +22,9 @@ from core.parser import (
 )
 from core.io_counter import count_io, format_balance, IO_TYPES
 from core.plc_selector import select_plc, format_selection, PLATFORMY
-from core.budget import calculate_budget, format_budget, GRUPY_RABATOWE
+from core.budget import (
+    calculate_budget, format_budget, zbierz_pozycje_oferty, GRUPY_RABATOWE,
+)
 from core.cables import select_cables
 from core.comparison import compare_variants
 from core.scada_asix import (
@@ -324,7 +326,7 @@ def build_io_dataframe(devices) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def create_word_report(devices, balance, project_label: str, platforma: str, rabaty: dict = None, hmi_entries: list = None, wycena_akpia_keys: set = None, price_overrides: dict = None) -> io.BytesIO:
+def create_word_report(devices, balance, project_label: str, platforma: str, rabaty: dict = None, hmi_entries: list = None, wycena_akpia_keys: set = None, price_overrides: dict = None, cable_length: float = 25, asix_factor: float = 1.2, asix_arch: dict = None) -> io.BytesIO:
     """Raport inżynierski z zatwierdzonym bilansem I/O (na razie: I/O; dobór w kolejnych modułach)."""
     doc = Document()
     title = doc.add_heading(f"Raport AKPiA: {project_label}", level=0)
@@ -371,7 +373,19 @@ def create_word_report(devices, balance, project_label: str, platforma: str, rab
             hc[0].text, hc[1].text, hc[2].text = str(it.ilosc), it.nazwa, it.lokalizacja
 
     doc.add_heading("Kosztorys", level=1)
-    budget = calculate_budget(sel.items, rabaty=rabaty or {})
+    # Ta sama funkcja składająca ofertę, co na ekranie i w Excelu. Dotąd Word
+    # pokazywał kosztorys SAMEGO STEROWNIKA i nazywał to "Kosztorys" — a to
+    # jest dokument, który idzie do klienta.
+    budget = calculate_budget(
+        zbierz_pozycje_oferty(
+            plc_sel=sel,
+            cabinet_sel=select_cabinet(balance, sel),
+            asix_sel=select_asix(balance, wspolczynnik=asix_factor, **(asix_arch or {})),
+            cable_sel=select_cables(devices, srednia_trasa_m=cable_length),
+            hmi_sel=hmi_sel_doc,
+        ),
+        rabaty=rabaty or {},
+    )
     bt = doc.add_table(rows=1, cols=6)
     bt.style = "Light Grid Accent 1"
     bh = bt.rows[0].cells
@@ -497,34 +511,27 @@ def create_devices_excel(devices, balance, platforma: str, rabaty: dict = None, 
          "Karty DI": v.karty_io.get("DI", 0), "Karty DO": v.karty_io.get("DO", 0),
          "Karty AI": v.karty_io.get("AI", 0), "Karty AO": v.karty_io.get("AO", 0),
          "Moduły łącznie": v.total_modules,
-         "Suma netto [PLN]": v.suma_netto if v.suma_netto > 0 else None}
+         "Suma netto [PLN]": v.suma_netto if v.suma_netto > 0 else None,
+         "Pozycji bez ceny": v.brak_ceny}
         for v in variants
     ])
-    # Kosztorys: PLC + ASIX razem
-    all_cost_items = list(sel.items)
-    budget = calculate_budget(all_cost_items, rabaty=rabaty or {})
-    # Dodaj pozycje ASIX i HMI do kosztorysu
-    from core.plc_selector import PlcItem as _PI
-    asix_plc_items = [_PI(nr=it.nr_katalogowy, opis=it.nazwa, ilosc=it.ilosc, grupa_rabatowa="ASIX") for it in asix.items]
-    # Grupa rabatowa Z POZYCJI, nie zaszyta na sztywno: obudowa, korytka i szyny
-    # przychodzą od innego dostawcy niż aparatura na szynę, więc mają własny
-    # rabat (grupa OBUDOWY). Wpisanie tu "APARATURA" dla wszystkiego liczyłoby
-    # obudowę rabatem wynegocjowanym u dostawcy złączek.
-    cab_plc_items = [_PI(nr=it.nr_katalogowy, opis=it.nazwa, ilosc=it.ilosc,
-                         grupa_rabatowa=it.grupa_rabatowa or "APARATURA")
-                     for it in cab_sel.items]
+    # Kosztorys składany DOKŁADNIE TAK SAMO jak na ekranie i w Wordzie —
+    # jedna funkcja, żeby te trzy wyniki nie mogły się już rozjechać.
+    # Wcześniej ten eksport obejmował sterownik + SCADA + szafę + HMI, ekran
+    # i Word tylko sterownik, a kable nie wchodziły do żadnego z nich.
     hmi_sel_xl = build_hmi_selection(hmi_entries or [])
-    hmi_plc_items = [_PI(nr=f"HMI-{i}", opis=f"{it.nazwa} ({it.lokalizacja})" if it.lokalizacja else it.nazwa,
-                         ilosc=it.ilosc, grupa_rabatowa="APARATURA")
-                     for i, it in enumerate(hmi_sel_xl.items, 1)]
     df_hmi = pd.DataFrame([
         {"Ilość": it.ilosc, "Model": it.nazwa, "Lokalizacja": it.lokalizacja}
         for it in hmi_sel_xl.items
     ]) if hmi_sel_xl.items else pd.DataFrame([{"Ilość": "", "Model": "Brak dodanych paneli HMI", "Lokalizacja": ""}])
-    budget_cab = calculate_budget(cab_plc_items, rabaty=rabaty or {})
-    budget_asix = calculate_budget(asix_plc_items, rabaty=rabaty or {})
-    budget_hmi = calculate_budget(hmi_plc_items, rabaty=rabaty or {})
-    all_budget_items = budget.items + budget_asix.items + budget_cab.items + budget_hmi.items
+    budget = calculate_budget(
+        zbierz_pozycje_oferty(
+            plc_sel=sel, cabinet_sel=cab_sel, asix_sel=asix,
+            cable_sel=cab, hmi_sel=hmi_sel_xl,
+        ),
+        rabaty=rabaty or {},
+    )
+    all_budget_items = budget.items
     df_budget = pd.DataFrame([
         {"Nr katalogowy": it.nr_katalogowy, "Nazwa": it.nazwa, "Ilość": it.ilosc,
          "Jednostka": it.jednostka,
@@ -615,6 +622,8 @@ def persist_fresh_analysis(devices, project_label, settings) -> None:
         devices, balance, project_label, settings["platforma"], settings["rabaty"],
         st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()),
         st.session_state.get("akpia_price_overrides", {}),
+        cable_length=settings["cable_length"], asix_factor=settings["asix_factor"],
+        asix_arch=get_asix_arch(),
     )
     excel_bio = create_devices_excel(
         devices, balance, settings["platforma"], settings["rabaty"], settings["cable_length"],
@@ -1442,18 +1451,42 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
          "Karty DI": v.karty_io.get("DI", 0), "Karty DO": v.karty_io.get("DO", 0),
          "Karty AI": v.karty_io.get("AI", 0), "Karty AO": v.karty_io.get("AO", 0),
          "Moduły łącznie": v.total_modules,
-         "Netto [PLN]": f"{v.suma_netto:,.2f}" if v.suma_netto > 0 else "brak cen"}
+         "Netto [PLN]": f"{v.suma_netto:,.2f}" if v.suma_netto > 0 else "brak cen",
+         # Bez tej kolumny tabela potrafi wprowadzić w błąd: platforma, której
+         # większość pozycji NIE MA jeszcze ceny w cenniku, wychodzi w niej
+         # najtaniej - bo sumuje się tylko to, co ma cenę. Liczba pozycji bez
+         # ceny musi stać obok kwoty, żeby było widać, ile jej brakuje.
+         "Poz. bez ceny": v.brak_ceny}
         for v in variants
     ])
     st.dataframe(df_cmp, width="stretch")
 
     st.subheader("9. Kosztorys")
-    budget = calculate_budget(sel.items, rabaty=rabaty)
+    st.caption(
+        "Cała oferta w jednym miejscu: sterownik, szafa, SCADA, okablowanie i HMI. "
+        "Urządzenia obiektowe (przetworniki) są osobno w sekcji 9a, bo wybiera się "
+        "je ręcznie."
+    )
+    # JEDNO źródło pozycji dla ekranu, Worda i Excela — patrz
+    # core.budget.zbierz_pozycje_oferty(). Wcześniej każde z tych trzech miejsc
+    # składało kosztorys osobno i liczyło CO INNEGO (ekran i Word: sam
+    # sterownik; Excel: sterownik + SCADA + szafa + HMI), a kable nie wchodziły
+    # nigdzie, mimo że cennik ma ich ceny za metr.
+    hmi_sel_budget = build_hmi_selection(st.session_state.get("hmi_entries", []))
+    budget = calculate_budget(
+        zbierz_pozycje_oferty(
+            plc_sel=sel, cabinet_sel=cab_sel, asix_sel=asix,
+            cable_sel=cab, hmi_sel=hmi_sel_budget,
+        ),
+        rabaty=rabaty,
+    )
     df_budget = pd.DataFrame([
         {
+            "Część": it.kategoria,
             "Nr katalogowy": it.nr_katalogowy,
             "Nazwa": it.nazwa,
             "Ilość": it.ilosc,
+            "Jedn.": it.jednostka,
             "Cena kat. [PLN]": f"{it.cena_katalogowa:.2f}" if it.cena_katalogowa else "BRAK",
             "Rabat [%]": f"{it.rabat_pct:.0f}",
             "Netto/szt [PLN]": f"{it.cena_netto_jed:.2f}" if it.cena_netto_jed else "-",
@@ -1463,13 +1496,27 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
     ])
     st.dataframe(df_budget, width="stretch")
 
+    # Rozbicie po częściach oferty — bez tego jedna suma nie mówi, czy
+    # kwota siedzi w sterowniku, czy w szafie.
+    wg_czesci = {}
+    for it in budget.items:
+        wg_czesci[it.kategoria] = wg_czesci.get(it.kategoria, 0.0) + (it.wartosc_netto or 0.0)
+    if wg_czesci:
+        czesci_cols = st.columns(len(wg_czesci))
+        for kol, (nazwa_czesci, kwota) in zip(czesci_cols, wg_czesci.items()):
+            kol.metric(nazwa_czesci, f"{kwota:,.0f} PLN")
+
     sum_cols = st.columns(2)
     sum_cols[0].metric("Suma katalogowa", f"{budget.suma_katalogowa:,.2f} PLN")
     sum_cols[1].metric("Suma netto (po rabatach)", f"{budget.suma_netto:,.2f} PLN")
 
     if budget.brak_ceny:
-        st.warning(f"⚠ {len(budget.brak_ceny)} pozycji bez ceny katalogowej — "
-                   "uzupełnij cennik, aby uzyskać pełny kosztorys.")
+        braki = ", ".join(sorted({it.nr_katalogowy for it in budget.brak_ceny})[:6])
+        st.warning(
+            f"⚠ {len(budget.brak_ceny)} pozycji bez ceny katalogowej — NIE wchodzą "
+            f"do sumy, więc oferta jest o nie zaniżona. Uzupełnij `cennik.csv`: {braki}"
+            + (" ..." if len(budget.brak_ceny) > 6 else "")
+        )
 
     st.subheader("9a. Kosztorys urządzeń AKPiA (wybór ręczny)")
     st.caption("Pozycje zaznaczone w sekcji 1a — osobno od sprzętu sterowniczego, "
@@ -1505,7 +1552,7 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
     # (Ścieżka zapisu do historii, save_outputs_to_disk, przekazywała je
     # poprawnie od początku - rozjeżdżały się tylko przyciski pobierania.)
     _overrides = st.session_state.get("akpia_price_overrides", {})
-    word_bio = create_word_report(devices, balance, project_label, platforma, rabaty, st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()), price_overrides=_overrides)
+    word_bio = create_word_report(devices, balance, project_label, platforma, rabaty, st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()), price_overrides=_overrides, cable_length=cable_length, asix_factor=asix_factor, asix_arch=get_asix_arch())
     excel_bio = create_devices_excel(devices, balance, platforma, rabaty, cable_length, asix_factor, st.session_state.get("hmi_entries", []), st.session_state.get("wycena_akpia_keys", set()), price_overrides=_overrides)
     # sel/cab_sel/asix/budget/dev_budget policzone wyżej (sekcje 3, 7, 5, 9, 9a) -
     # PDF dostaje te same obiekty zamiast dobierać PLC/szafę/SCADA/kosztorys
