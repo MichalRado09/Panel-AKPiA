@@ -1634,3 +1634,96 @@ def test_kazda_pozycja_ktora_dobor_potrafi_wygenerowac_ma_cene_w_cenniku():
         "pozycje, które dobór potrafi wygenerować, a cennik ich nie wycenia "
         f"(wypadną z sumy): {bez_ceny}"
     )
+
+
+# --- rozstrzyganie BRAK DANYCH na ZESTAW sygnałów (sekcja 1b) -----------------
+# Uwaga inżyniera: "w urządzeniach nierozstrzygniętych mogę wybrać tylko jeden
+# sygnał, a urządzenia mogą mieć kilka różnych wejść i wyjść".
+
+from core.parser import rozstrzygnij_sygnal
+
+
+def _dev_z_brakiem_danych(opis="Przetwornik temperatury", ilosc=1):
+    dev = urzadzenie_reczne(opis, "TT-01", ilosc=ilosc)
+    dev.sygnaly = [{"typ": NO_DATA, "nazwa": "Pomiar - czujnik czy przetwornik?",
+                    "source": "typ_urzadzenia"}]
+    dev.warnings = ["Nie sklasyfikowano sygnału (DI/DO/AI/AO): x - wymaga decyzji inżyniera."]
+    return dev
+
+
+def test_rozstrzygniecie_tworzy_kilka_sygnalow_roznych_typow():
+    """
+    Sedno uwagi: jeden nierozpoznany punkt to zwykle KILKA sygnałów naraz -
+    przetwornik z pomiarem i stykiem alarmowym to AI + DI. Poprzednia wersja
+    pozwalała przypisać dokładnie jeden typ, więc reszta sygnałów ginęła.
+    """
+    dev = _dev_z_brakiem_danych()
+    assert rozstrzygnij_sygnal(dev, 0, ai=1, di=2) == 3
+    typy = sorted(s["typ"] for s in dev.sygnaly)
+    assert typy == ["AI", "DI", "DI"]
+    assert {s["source"] for s in dev.sygnaly} == {"inzynier"}
+    assert not any(s["typ"] == NO_DATA for s in dev.sygnaly)
+
+
+def test_rozstrzygniecie_wchodzi_do_bilansu_z_mnoznikiem_ilosci():
+    dev = _dev_z_brakiem_danych(ilosc=3)
+    rozstrzygnij_sygnal(dev, 0, ai=1, di=2, do=1)
+    bal = count_io([dev], reserve_percent=0)
+    assert bal.base["AI"] == 3
+    assert bal.base["DI"] == 6
+    assert bal.base["DO"] == 3
+    assert bal.source_counts["inzynier"] == 12
+
+
+def test_same_zera_usuwaja_sygnal_zamiast_zostawiac_w_zawieszeniu():
+    """
+    „To sam element pomiarowy, nic nie idzie do sterownika" to pełnoprawna
+    odpowiedź. Bez niej jedyną drogą do zamknięcia takiego punktu było
+    udawanie, że ma sygnał.
+    """
+    dev = _dev_z_brakiem_danych()
+    assert rozstrzygnij_sygnal(dev, 0) == 0
+    assert dev.sygnaly == []
+    assert count_io([dev], 0).base["AI"] == 0
+    assert any("BRAK I/O" in w for w in dev.warnings)
+
+
+def test_rozstrzygniecie_kasuje_ostrzezenie_o_braku_klasyfikacji():
+    """
+    Po podjęciu decyzji urządzenie nie może dalej wisieć jako
+    nierozstrzygnięte - inaczej walidator zlicza je mimo zamkniętej sprawy.
+    """
+    dev = _dev_z_brakiem_danych()
+    rozstrzygnij_sygnal(dev, 0, ai=1)
+    assert not any("Nie sklasyfikowano sygnału" in w for w in dev.warnings)
+    assert any("rozstrzygnięty przez inżyniera" in w for w in dev.warnings)
+
+
+def test_rozstrzygniecie_nie_rusza_pozostalych_sygnalow_urzadzenia():
+    """Decyzja dotyczy JEDNEGO punktu - sygnały odczytane z kolumn zostają."""
+    dev = _dev_z_brakiem_danych()
+    dev.sygnaly = [
+        {"typ": "DO", "nazwa": "Start", "source": "kolumna"},
+        {"typ": NO_DATA, "nazwa": "niejasne", "source": "typ_urzadzenia"},
+        {"typ": "DI", "nazwa": "Awaria", "source": "kolumna"},
+    ]
+    rozstrzygnij_sygnal(dev, 1, ai=1, ao=1)
+    assert [s["typ"] for s in dev.sygnaly] == ["DO", "AI", "AO", "DI"]
+    assert dev.sygnaly[0]["source"] == "kolumna"
+    assert dev.sygnaly[-1]["source"] == "kolumna"
+
+
+def test_podpowiedz_ze_starego_formatu_nie_wywala_sekcji_1b():
+    """
+    Plik z zapamiętanymi decyzjami jest LOKALNY i nikt go ręcznie nie migruje.
+    Wpisy sprzed wprowadzenia zestawów trzymały jeden typ jako napis ("AI") -
+    wczytanie ich bez tłumaczenia wywaliłoby sekcję 1b u każdego, kto używał
+    aplikacji wcześniej.
+    """
+    from core.parser import decyzja_na_liczby
+    assert decyzja_na_liczby("AI") == {"DI": 0, "DO": 0, "AI": 1, "AO": 0}
+    assert decyzja_na_liczby({"AI": 1, "DI": 2}) == {"DI": 2, "DO": 0, "AI": 1, "AO": 0}
+    # śmieci i braki nie mogą wywalić UI - zawsze komplet czterech liczb
+    for smiec in (None, "", "XX", 7, [], {"AI": "dwa"}, {"NIEZNANY": 3}):
+        assert set(decyzja_na_liczby(smiec)) == {"DI", "DO", "AI", "AO"}
+        assert all(isinstance(v, int) and v >= 0 for v in decyzja_na_liczby(smiec).values())

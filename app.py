@@ -18,7 +18,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from core.ai_contract import build_extraction_prompt, parse_ai_json, build_response_schema
 from core.parser import (
     parse_devices, parse_ai_devices, devices_to_records, records_to_devices,
-    urzadzenie_reczne,
+    urzadzenie_reczne, rozstrzygnij_sygnal, decyzja_na_liczby,
 )
 from core.io_counter import count_io, format_balance, IO_TYPES
 from core.plc_selector import select_plc, format_selection, PLATFORMY
@@ -101,14 +101,21 @@ def load_learned_signal_decisions() -> dict:
         return {}
 
 
-def save_learned_signal_decision(sygnal_nazwa: str, typ: str) -> None:
+def save_learned_signal_decision(sygnal_nazwa: str, liczby: dict) -> None:
+    """
+    Zapamiętuje CAŁY zestaw sygnałów, na jaki inżynier rozstrzygnął dany
+    opis - np. {"AI": 1, "DI": 2}, a nie jeden typ. Urządzenie, którego
+    reguła nie umie sklasyfikować, rzadko ma dokładnie jedno wejście.
+    """
     decisions = load_learned_signal_decisions()
-    decisions[sygnal_nazwa] = typ
+    decisions[sygnal_nazwa] = {t: int(n) for t, n in liczby.items() if int(n) > 0}
     try:
         with open(LEARNED_SIGNALS_FILE, "w", encoding="utf-8") as f:
             json.dump(decisions, f, ensure_ascii=False, indent=2)
     except OSError:
         pass
+
+
 
 
 def _get_secret(key: str) -> str | None:
@@ -937,14 +944,23 @@ def render_undecided_signal_resolver(devices: list) -> None:
     decyzji są dokładnie znane (patrz core/signal_rules.py, core/device_rules.py:
     "NIE zgadujemy").
 
-    Decyzja nadpisuje typ TYLKO tego jednego sygnału (mutacja in-place na
-    obiekcie Device przechowywanym w st.session_state.devices) — reszta
-    danych urządzenia zostaje bez zmian, bilans I/O przelicza się przy
-    najbliższym rerenderze. Decyzja jest też zapamiętywana (patrz
-    save_learned_signal_decision) jako PODPOWIEDŹ do następnego razu, gdy
-    ten sam sygnał („Pomiar temperatury - czujnik czy przetwornik?...")
-    pojawi się w innym projekcie — inżynier wciąż musi kliknąć "Zastosuj",
-    podpowiedź tylko wstępnie zaznacza wybór.
+    Rozstrzygnięcie podaje się LICZBOWO, osobno dla DI/DO/AI/AO — bo jeden
+    nierozpoznany punkt to zwykle KILKA sygnałów naraz. Przetwornik z pomiarem
+    i stykiem alarmowym to AI + DI; napęd bywa AO + DO + 2x DI. Poprzednia
+    wersja pozwalała wybrać DOKŁADNIE JEDEN typ, więc inżynier albo gubił
+    pozostałe sygnały, albo musiał wrócić do edycji pliku źródłowego — czyli
+    dokładnie tam, skąd ta sekcja miała go wyciągnąć.
+
+    Zostawienie samych zer to też pełnoprawna odpowiedź („sam element
+    pomiarowy, nic nie idzie do sterownika") — sygnał znika, urządzenie
+    zostaje na liście i da się je wycenić w sekcji 1a.
+
+    Decyzja mutuje Device w st.session_state.devices w miejscu; bilans I/O
+    przelicza się przy najbliższym rerenderze. Jest też zapamiętywana (patrz
+    save_learned_signal_decision) jako PODPOWIEDŹ — cały zestaw liczb, nie
+    jeden typ — do następnego razu, gdy ten sam opis sygnału pojawi się
+    w innym projekcie. Inżynier wciąż musi kliknąć „Zastosuj”; podpowiedź
+    tylko wypełnia pola.
     """
     undecided = [
         (i, si, dev, sig)
@@ -956,33 +972,38 @@ def render_undecided_signal_resolver(devices: list) -> None:
         return
 
     learned = load_learned_signal_decisions()
-    typy_opcje = ["— nie rozstrzygnięto —", "DI", "DO", "AI", "AO"]
 
     st.subheader("1b. Rozstrzygnij sygnały bez klasyfikacji (BRAK DANYCH)")
     st.caption(
         f"{len(undecided)} sygnał(ów) nie ma jednoznacznej klasyfikacji DI/DO/AI/AO "
         "(np. „czujnik czy przetwornik?”) i nie wchodzi do bilansu I/O, dopóki nie "
-        "zostaną rozstrzygnięte. Rozstrzygnij poniżej, żeby nie edytować pliku "
-        "źródłowego tylko dla tej jednej decyzji. Podpowiedź (jeśli jest) pochodzi "
-        "z Twojej wcześniejszej decyzji dla tego samego sygnału w innym projekcie — "
-        "i tak wymaga kliknięcia „Zastosuj”."
+        "zostaną rozstrzygnięte. **Podaj ile których sygnałów ma to urządzenie** — "
+        "jedno urządzenie może mieć kilka wejść i wyjść naraz (np. przetwornik "
+        "z alarmem to AI + DI). Same zera = punkt nie wysyła nic do sterownika; "
+        "pozycja zniknie z listy nierozstrzygniętych i zostanie na liście urządzeń. "
+        "Podpowiedź (jeśli jest) pochodzi z Twojej wcześniejszej decyzji dla tego "
+        "samego sygnału — i tak wymaga kliknięcia „Zastosuj”."
     )
     for i, si, dev, sig in undecided:
-        cols = st.columns([3, 2, 1])
         nazwa_sygnalu = sig.get("nazwa", "")
-        cols[0].markdown(f"**{dev.oznaczenie or dev.opis}** — {nazwa_sygnalu}")
-        podpowiedz = learned.get(nazwa_sygnalu)
-        wybor = cols[1].selectbox(
-            "Typ sygnału", typy_opcje,
-            index=typy_opcje.index(podpowiedz) if podpowiedz in typy_opcje else 0,
-            key=f"undecided_{i}_{si}", label_visibility="collapsed",
-        )
-        if cols[2].button("Zastosuj", key=f"undecided_apply_{i}_{si}", width="stretch"):
-            if wybor != "— nie rozstrzygnięto —":
-                dev.sygnaly[si]["typ"] = wybor
-                dev.sygnaly[si]["source"] = "inzynier"
-                save_learned_signal_decision(nazwa_sygnalu, wybor)
-                st.rerun()
+        st.markdown(f"**{dev.oznaczenie or dev.opis}** — {nazwa_sygnalu}")
+        podp = decyzja_na_liczby(learned.get(nazwa_sygnalu))
+        cols = st.columns([1, 1, 1, 1, 1.4])
+        liczby = {}
+        for kol, typ in zip(cols[:4], ("DI", "DO", "AI", "AO")):
+            liczby[typ] = kol.number_input(
+                typ, min_value=0, max_value=99, step=1, value=podp[typ],
+                key=f"undecided_{i}_{si}_{typ}",
+            )
+        cols[4].markdown("&nbsp;", unsafe_allow_html=True)  # wyrównanie do pól
+        if cols[4].button("Zastosuj", key=f"undecided_apply_{i}_{si}", width="stretch"):
+            rozstrzygnij_sygnal(
+                dev, si, di=liczby["DI"], do=liczby["DO"],
+                ai=liczby["AI"], ao=liczby["AO"],
+            )
+            save_learned_signal_decision(nazwa_sygnalu, liczby)
+            st.session_state.devices = devices
+            st.rerun()
 
 
 def render_device_budget_table(devices, rabaty: dict):
