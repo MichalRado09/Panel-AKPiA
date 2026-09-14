@@ -747,6 +747,97 @@ def urzadzenie_reczne(
     return dev
 
 
+def decyzja_na_liczby(zapisane) -> dict:
+    """
+    Zapamiętana decyzja o sygnale, sprowadzona do liczb {"DI": n, "DO": n, ...}.
+
+    Aplikacja zapamiętuje rozstrzygnięcia z sekcji 1b, żeby podpowiadać je przy
+    tym samym opisie sygnału w kolejnym projekcie. Format tego zapisu ZMIENIŁ
+    SIĘ: wcześniej trzymał jeden typ jako napis ("AI"), teraz cały zestaw
+    ({"AI": 1, "DI": 2}), bo jedno urządzenie miewa kilka wejść i wyjść.
+
+    Plik z decyzjami jest LOKALNY i nikt go ręcznie nie migruje, więc wczytanie
+    starego wpisu bez tłumaczenia wywaliłoby sekcję 1b u każdego, kto używał
+    aplikacji wcześniej. Ta funkcja przyjmuje oba formaty (i śmieci) i zawsze
+    zwraca komplet czterech liczb.
+    """
+    puste = {"DI": 0, "DO": 0, "AI": 0, "AO": 0}
+    if isinstance(zapisane, str):          # stary format: pojedynczy typ
+        return {**puste, **({zapisane: 1} if zapisane in puste else {})}
+    if isinstance(zapisane, dict):
+        wynik = dict(puste)
+        for typ, n in zapisane.items():
+            if typ in puste:
+                try:
+                    wynik[typ] = max(0, int(n))
+                except (TypeError, ValueError):
+                    pass
+        return wynik
+    return puste
+
+
+def rozstrzygnij_sygnal(dev, indeks: int, di: int = 0, do: int = 0,
+                        ai: int = 0, ao: int = 0) -> int:
+    """
+    Zamienia JEDEN sygnał BRAK DANYCH na ZESTAW sygnałów podanych liczbowo.
+
+    PO CO ZESTAW, A NIE JEDEN TYP: sygnał trafia do BRAK DANYCH wtedy, gdy
+    reguła rozpoznała urządzenie, ale nie umie powiedzieć, co ono wystawia -
+    a takie urządzenie rzadko ma dokładnie jedno wejście. Przetwornik
+    z pomiarem i stykiem alarmowym to AI + DI; napęd bywa AO + DO + 2x DI.
+    Poprzednia wersja pozwalała przypisać DOKŁADNIE JEDEN typ, więc inżynier
+    albo gubił pozostałe sygnały, albo musiał wracać do edycji pliku
+    źródłowego - czyli dokładnie tam, skąd ta sekcja miała go wyciągnąć.
+
+    Wszystkie utworzone sygnały dostają source="inzynier", tak samo jak przy
+    ręcznym dopisaniu urządzenia - w tabeli widać, że to decyzja człowieka,
+    a nie odczyt z kolumny ani reguła typu urządzenia.
+
+    ZERO SYGNAŁÓW TO TEŻ ODPOWIEDŹ, i to ważna: „to jest sam element pomiarowy,
+    nic nie idzie do sterownika". Wtedy sygnał BRAK DANYCH jest USUWANY, a nie
+    zostawiany w zawieszeniu - urządzenie zostaje na liście (można je wycenić
+    w sekcji 1a), tylko przestaje wisieć jako nierozstrzygnięte. Bez tego
+    jedyną drogą do zamknięcia takiego punktu było udawanie, że ma sygnał.
+
+    Mutuje `dev` w miejscu. Zwraca liczbę utworzonych sygnałów (0 = usunięto).
+    """
+    stary = dev.sygnaly[indeks]
+    nazwa_zrodlowa = stary.get("nazwa", "")
+
+    nowe: list[dict] = []
+    for typ, n in (("DI", di), ("DO", do), ("AI", ai), ("AO", ao)):
+        for k in range(max(0, int(n))):
+            nowe.append({
+                "typ": typ,
+                "nazwa": (f"{nazwa_zrodlowa} [{typ} {k + 1}]" if int(n) > 1
+                          else f"{nazwa_zrodlowa} [{typ}]"),
+                "source": "inzynier",
+            })
+
+    dev.sygnaly[indeks:indeks + 1] = nowe
+
+    # Ostrzeżenie o nierozstrzygniętym sygnale przestaje być prawdą, więc
+    # musi zniknąć - inaczej urządzenie zostaje oznaczone na czerwono mimo
+    # podjętej decyzji, a walidator dalej je zlicza.
+    dev.warnings = [w for w in dev.warnings
+                    if "Nie sklasyfikowano sygnału" not in w]
+
+    if nowe:
+        typy = ", ".join(f"{n}x {t}" for t, n in
+                         (("DI", di), ("DO", do), ("AI", ai), ("AO", ao)) if n)
+        dev.warnings.append(
+            f"Sygnał „{nazwa_zrodlowa}" + f"\" rozstrzygnięty przez inżyniera: {typy}."
+        )
+    else:
+        dev.warnings.append(
+            f"Sygnał „{nazwa_zrodlowa}\" rozstrzygnięty przez inżyniera jako "
+            f"BRAK I/O - urządzenie nie wysyła nic do sterownika (zostaje na "
+            f"liście, może być wycenione w sekcji 1a)."
+        )
+
+    return len(nowe)
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else None
