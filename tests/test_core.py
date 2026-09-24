@@ -1766,3 +1766,110 @@ def test_zestawienie_bez_urzadzen_parsuje_sie_do_pustej_listy():
     bal = count_io(devices, reserve_percent=30)
     assert bal.base_total == 0
     assert bal.reserved_total == 0
+
+
+# --- plik BEZ wiersza naglowkowego (realne zestawienie CAPEX) -----------------
+# Zgloszone przez przelozonego: "wrzucilem przykladowe zestawienie technologii
+# z capexu... system sie wykrzacza". Plik mial 64 pozycje i ZERO naglowkow -
+# pandas brał pierwszy wiersz jako nazwy kolumn, parser nie rozpoznawal juz
+# zadnej kolumny i zwracal PUSTA liste urzadzen, co z kolei wywalalo sekcje 1a.
+
+from core.parser import wykryj_naglowek, zastosuj_mapowanie, POLA_DO_MAPOWANIA
+
+
+def _arkusz_bez_naglowka():
+    """Wycinek realnego zestawienia CAPEX: lp | branza | uklad | nazwa | typ | jedn | ilosc."""
+    import pandas as pd
+    return pd.DataFrame([
+        [1, "1. Technologiczna", "Główne urządzenia", "Pompa ciepła woda-woda 2 x 500 kW",
+         "Carrier 61XWH", "kpl", 2],
+        [2, "1. Technologiczna", "Obieg wody sieciowej", "Zawór regulacyjny z siłownikiem DN125",
+         "", "kpl", 1],
+        [3, "1. Technologiczna", "Obieg wody sieciowej", "Przetwornik ciśnienia", "", "kpl", 2],
+        [4, "1. Technologiczna", "Obieg wody sieciowej", "Zawór odcinający ręczny DN150",
+         "ZETKAMA", "kpl", 14],
+        [5, "1. Technologiczna", "Obieg wody sieciowej", "Rura DN150", "", "mb", 30],
+    ])
+
+
+def test_brak_naglowka_jest_rozpoznany_jako_brak():
+    """
+    Kluczowe rozróżnienie: aplikacja ma WIEDZIEĆ, że nagłówka nie ma - zamiast
+    brać pierwszy wiersz danych za nazwy kolumn i cicho gubić urządzenie.
+    """
+    assert wykryj_naglowek(_arkusz_bez_naglowka()) is None
+
+
+def test_naglowek_znaleziony_takze_gdy_nie_stoi_w_pierwszym_wierszu():
+    """Nad tabelą bywa tytuł albo metryka projektu."""
+    import pandas as pd
+    arkusz = pd.DataFrame([
+        ["Zestawienie urządzeń AKPiA", "", "", ""],
+        ["projekt nr 381/2026", "", "", ""],
+        ["L.p.", "Urządzenie", "Typ / Opis odbiornika", "Ilość"],
+        [1, "P1", "Pompa z falownikiem", 2],
+    ])
+    assert wykryj_naglowek(arkusz) == 2
+
+
+def test_sam_lp_i_ilosc_to_za_malo_na_naglowek():
+    """
+    Próg wymaga kolumny OPISU. Same słowa "Lp." i "Ilość" trafiają się też
+    w danych, a uznanie takiego wiersza za nagłówek zjadłoby prawdziwe dane.
+    """
+    import pandas as pd
+    assert wykryj_naglowek(pd.DataFrame([["L.p.", "Ilość"], [1, 2]])) is None
+
+
+def test_reczne_mapowanie_odzyskuje_zestawienie_bez_naglowkow():
+    """
+    Sedno poprawki: po wskazaniu kolumn ten sam plik, z którego aplikacja
+    zwracała ZERO urządzeń, daje pełną listę i bilans I/O wywnioskowany
+    z typów urządzeń.
+    """
+    raw = _arkusz_bez_naglowka()
+    tabela = zastosuj_mapowanie(raw, {"lp": 0, "uklad": 2, "opis": 3, "ilosc": 6})
+    devices, _ = parse_devices(tabela)
+
+    assert len(devices) == 5
+    assert devices[0].opis.startswith("Pompa ciepła")
+    assert devices[3].ilosc == 14          # ilość wzięta z właściwej kolumny
+
+    bal = count_io(devices, reserve_percent=0)
+    assert bal.base_total > 0, "reguły typu urządzenia muszą dać sygnały"
+    # wszystko pochodzi z reguł, bo plik nie ma kolumn sygnałowych
+    assert bal.source_counts["kolumna"] == 0
+    assert bal.source_counts["typ_urzadzenia"] == bal.base_total
+
+
+def test_mapowanie_pomija_kolumny_niewskazane_i_spoza_zakresu():
+    """Odporność na wskazanie kolumny, której w arkuszu nie ma."""
+    raw = _arkusz_bez_naglowka()
+    tabela = zastosuj_mapowanie(raw, {"opis": 3, "ilosc": None, "moc": 99})
+    assert len(tabela.columns) == 1
+    assert len(tabela) == len(raw)
+
+
+def test_mapowanie_moze_pominac_wiersz_naglowkowy():
+    """Gdy nagłówek JEST, ale nazwany inaczej niż aplikacja rozpoznaje."""
+    import pandas as pd
+    raw = pd.DataFrame([
+        ["Poz", "Nazwa aparatu", "Szt"],
+        [1, "Przetwornik ciśnienia", 3],
+    ])
+    tabela = zastosuj_mapowanie(raw, {"opis": 1, "ilosc": 2}, pierwszy_wiersz_danych=1)
+    devices, _ = parse_devices(tabela)
+    assert len(devices) == 1
+    assert devices[0].ilosc == 3
+
+
+def test_pola_do_mapowania_maja_tylko_znane_kolumny():
+    """
+    Każde pole oferowane w panelu musi być znane rdzeniowi - inaczej inżynier
+    wskazałby kolumnę, której parser i tak nie przeczyta.
+    """
+    from core.parser import _COLUMN_ALIASES
+    for pole, etykieta, _wymagane in POLA_DO_MAPOWANIA:
+        assert pole in _COLUMN_ALIASES, pole
+        assert etykieta
+    assert any(wym for _p, _e, wym in POLA_DO_MAPOWANIA), "opis musi być wymagany"

@@ -144,6 +144,82 @@ def _clean(raw) -> str:
 
 # --- Mapowanie kolumn --------------------------------------------------------
 
+# Pola, które inżynier może wskazać ręcznie, gdy plik nie ma nagłówków albo
+# ma je nazwane inaczej niż cokolwiek w _COLUMN_ALIASES. Kolejność = kolejność
+# w panelu; "opis" jest jedynym polem WYMAGANYM, bo bez niego nie ma jak
+# rozpoznać urządzenia.
+POLA_DO_MAPOWANIA = [
+    ("opis", "Nazwa / typ urządzenia", True),
+    ("ilosc", "Ilość", False),
+    ("uklad", "Układ / obszar", False),
+    ("oznaczenie", "Oznaczenie projektowe", False),
+    ("lp", "L.p.", False),
+    ("analog", "Sygnał analogowy", False),
+    ("cyfrowy", "Sygnał cyfrowy", False),
+    ("moc", "Moc [kW]", False),
+    ("pomiar", "Pomiar (lokalny/zdalny)", False),
+]
+
+
+def wykryj_naglowek(raw: pd.DataFrame, max_wierszy: int = 10) -> int | None:
+    """
+    Który wiersz arkusza jest nagłówkiem — albo None, gdy nagłówka nie ma.
+
+    PO CO: realne zestawienia bywają czytane wprost z arkusza, w którym nad
+    tabelą stoi tytuł, metryka projektu albo NIC - dane zaczynają się od
+    pierwszego wiersza. pandas.read_excel domyślnie bierze wiersz 0 JAKO
+    NAGŁÓWEK, więc w tym ostatnim przypadku pierwsze urządzenie zostaje
+    zjedzone i zamienione w nazwy kolumn, a parser nie rozpoznaje już żadnej
+    kolumny i zwraca PUSTĄ listę urządzeń. Z zewnątrz wygląda to tak, jakby
+    aplikacja nie umiała przeczytać pliku - bez wskazówki, dlaczego.
+
+    Wiersz uznajemy za nagłówek, gdy jego komórki dopasowują się do aliasów
+    z _COLUMN_ALIASES co najmniej dwukrotnie ORAZ jest wśród nich kolumna
+    opisu - sam "Lp." i "Ilość" to za mało, bo takie słowa trafiają się też
+    w danych.
+
+    Świadomie NIE zgadujemy dalej: gdy żaden wiersz nie spełnia tego progu,
+    zwracamy None, a decyzję (czyli wskazanie kolumn) zostawiamy inżynierowi.
+    """
+    for i in range(min(max_wierszy, len(raw))):
+        wiersz = [("" if pd.isna(v) else str(v)) for v in raw.iloc[i].tolist()]
+        mapa = _build_column_map(wiersz)
+        if "opis" in mapa and len(mapa) >= 2:
+            return i
+    return None
+
+
+def zastosuj_mapowanie(raw: pd.DataFrame, mapowanie: dict[str, int],
+                       pierwszy_wiersz_danych: int = 0) -> pd.DataFrame:
+    """
+    Buduje tabelę o KANONICZNYCH nagłówkach z ręcznego wskazania kolumn.
+
+    mapowanie: {pole -> numer kolumny w arkuszu}, np. {"opis": 3, "ilosc": 6}.
+    pierwszy_wiersz_danych: od którego wiersza zaczynają się dane (0 = od razu,
+        gdy plik nie ma nagłówka).
+
+    Wynik trafia prosto do parse_devices(), więc cała dalsza logika - reguły
+    typu urządzenia, deduplikacja, pomiar lokalny - działa bez zmian. To jest
+    sens tego rozwiązania: mapowanie dotyka WYŁĄCZNIE odczytu kolumn, a nie
+    reguł doboru.
+    """
+    dane = raw.iloc[pierwszy_wiersz_danych:].reset_index(drop=True)
+
+    # Pierwszy alias każdego pola jest nazwą, którą _build_column_map na pewno
+    # rozpozna - dzięki temu nie trzeba nigdzie duplikować listy nagłówków.
+    kolumny = {}
+    for pole, nr in mapowanie.items():
+        if nr is None or pole not in _COLUMN_ALIASES:
+            continue
+        if nr < 0 or nr >= dane.shape[1]:
+            continue
+        kolumny[_COLUMN_ALIASES[pole][0]] = dane.iloc[:, nr]
+
+    if not kolumny:
+        return pd.DataFrame()
+    return pd.DataFrame(kolumny)
+
+
 def _build_column_map(columns: list[str]) -> dict[str, str]:
     """
     Zwraca mapę: nazwa_kanoniczna -> rzeczywista_nazwa_kolumny_w_pliku.
