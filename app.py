@@ -19,6 +19,7 @@ from core.ai_contract import build_extraction_prompt, parse_ai_json, build_respo
 from core.parser import (
     parse_devices, parse_ai_devices, devices_to_records, records_to_devices,
     urzadzenie_reczne, rozstrzygnij_sygnal, decyzja_na_liczby,
+    wykryj_naglowek, zastosuj_mapowanie, POLA_DO_MAPOWANIA,
 )
 from core.io_counter import count_io, format_balance, IO_TYPES
 from core.plc_selector import select_plc, format_selection, PLATFORMY
@@ -658,14 +659,101 @@ def list_excel_sheets(uploaded_file) -> list[str]:
 
 
 def read_excel_file(uploaded_file, sheet_name=0) -> pd.DataFrame:
-    """sheet_name: int (pozycja, domyślnie 0 = pierwszy) lub str (nazwa arkusza)."""
+    """
+    Surowa zawartość arkusza, BEZ traktowania pierwszego wiersza jako nagłówka
+    (header=None). Nagłówek wykrywa dopiero przygotuj_tabele().
+
+    DLACZEGO NIE header=0: domyślne zachowanie pandas zjada pierwszy wiersz
+    i zamienia go w nazwy kolumn. W zestawieniu, które nagłówka NIE MA (realny
+    przypadek - lista CAPEX z technologii), znika przez to pierwsze urządzenie,
+    parser nie rozpoznaje ani jednej kolumny i zwraca pustą listę. Z zewnątrz
+    wygląda to, jakby aplikacja nie umiała przeczytać pliku.
+
+    sheet_name: int (pozycja, domyślnie 0 = pierwszy) lub str (nazwa arkusza).
+    """
     try:
         uploaded_file.seek(0)
-        return pd.read_excel(uploaded_file, sheet_name=sheet_name)
+        return pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None)
     except ImportError as exc:
         raise ValueError("Brak biblioteki do odczytu Excela (openpyxl/xlrd).") from exc
     except Exception as exc:
         raise ValueError(f"Nie udało się odczytać pliku Excel: {exc}") from exc
+
+
+def przygotuj_tabele(raw: pd.DataFrame):
+    """
+    Z surowego arkusza robi tabelę gotową dla parse_devices().
+
+    Zwraca (tabela, wiersz_naglowka). tabela = None oznacza, że nagłówka nie
+    udało się rozpoznać - wtedy interfejs prosi inżyniera o wskazanie kolumn
+    (render_column_mapper), zamiast po cichu zwrócić zero urządzeń.
+    """
+    wiersz = wykryj_naglowek(raw)
+    if wiersz is None:
+        return None, None
+    tabela = raw.iloc[wiersz + 1:].reset_index(drop=True)
+    tabela.columns = [("" if pd.isna(v) else str(v)) for v in raw.iloc[wiersz].tolist()]
+    return tabela, wiersz
+
+
+def render_column_mapper(raw: pd.DataFrame):
+    """
+    Ręczne wskazanie kolumn, gdy plik nie ma rozpoznawalnych nagłówków.
+
+    REALNY PRZYPADEK, KTÓRY TO WYMUSIŁ: zestawienie technologii z CAPEX-u -
+    64 pozycje, ZERO nagłówków, dane od pierwszego wiersza. Aplikacja
+    zwracała z niego pustą listę urządzeń i wywalała się dalej. Po wskazaniu
+    dwóch kolumn (nazwa urządzenia i ilość) ten sam plik daje 58 sygnałów
+    rozpoznanych z typów urządzeń.
+
+    Mapowanie dotyka WYŁĄCZNIE odczytu kolumn. Reguły typu urządzenia,
+    deduplikacja i cała reszta rdzenia działają potem bez zmian.
+
+    Zwraca gotową tabelę albo None, dopóki inżynier nie wskaże kolumny opisu.
+    """
+    st.warning(
+        "**Nie rozpoznano nagłówków w tym arkuszu.** Wskaż poniżej, która kolumna "
+        "zawiera co — wystarczy nazwa urządzenia (i najlepiej ilość). Sygnały, "
+        "których plik nie ma, zostaną wywnioskowane z typu urządzenia i oznaczone "
+        "do weryfikacji."
+    )
+
+    etykiety = ["— brak —"] + [
+        f"{nr + 1}. {_podglad_kolumny(raw, nr)}" for nr in range(raw.shape[1])
+    ]
+
+    naglowek_w_pliku = st.checkbox(
+        "Pierwszy wiersz to nagłówek (pomiń go w danych)", value=False,
+        key="map_ma_naglowek",
+        help="Zaznacz, jeśli w arkuszu jest wiersz z nazwami kolumn, tylko "
+             "nazwanymi inaczej, niż aplikacja rozpoznaje.",
+    )
+
+    mapowanie = {}
+    kolumny_ui = st.columns(3)
+    for i, (pole, etykieta, wymagane) in enumerate(POLA_DO_MAPOWANIA):
+        wybor = kolumny_ui[i % 3].selectbox(
+            etykieta + (" *" if wymagane else ""), etykiety,
+            key=f"map_{pole}",
+        )
+        mapowanie[pole] = None if wybor == etykiety[0] else etykiety.index(wybor) - 1
+
+    if mapowanie.get("opis") is None:
+        st.caption("Wskaż przynajmniej kolumnę z nazwą urządzenia, żeby ruszyć dalej.")
+        return None
+
+    tabela = zastosuj_mapowanie(
+        raw, mapowanie, pierwszy_wiersz_danych=1 if naglowek_w_pliku else 0
+    )
+    st.success(f"Mapowanie gotowe — {len(tabela)} wierszy do analizy.")
+    return tabela
+
+
+def _podglad_kolumny(raw: pd.DataFrame, nr: int, ile: int = 2) -> str:
+    """Pierwsze niepuste wartości kolumny — żeby wybór nie był na ślepo."""
+    wartosci = [str(v) for v in raw.iloc[:, nr].tolist() if not pd.isna(v)][:ile]
+    podglad = " / ".join(w[:24] for w in wartosci)
+    return podglad or "(pusta)"
 
 
 def build_project_label(excel_name, pdf_name, sheet_name=None) -> str:
@@ -1723,15 +1811,37 @@ def main():
         excel_df = None
         if excel_file:
             try:
-                excel_df = read_excel_file(excel_file, sheet_name=selected_sheet)
+                raw_df = read_excel_file(excel_file, sheet_name=selected_sheet)
                 sheet_label = f"„{selected_sheet}”" if isinstance(selected_sheet, str) else ""
-                total_rows = len(excel_df)
-                if total_rows > 10:
-                    st.markdown(f"**Podgląd arkusza {sheet_label}** — pokazano pierwsze 10 "
-                               f"z **{total_rows}** wierszy. Analiza uwzględni wszystkie {total_rows}.")
+                excel_df, wiersz_naglowka = przygotuj_tabele(raw_df)
+
+                if excel_df is None:
+                    # Nagłówków nie rozpoznano — inżynier wskazuje kolumny sam.
+                    # Podgląd numerujemy OD JEDYNKI, tak samo jak opcje na
+                    # listach wyboru niżej. Domyślne numerowanie pandas zaczyna
+                    # się od zera, więc „Pompa ciepła" stałaby w podglądzie pod
+                    # kolumną 3, a na liście wyboru pod „4." - gotowa pomyłka
+                    # przy każdym mapowaniu.
+                    podglad = raw_df.head(10).copy()
+                    podglad.columns = [str(i + 1) for i in range(raw_df.shape[1])]
+                    st.markdown(f"**Podgląd arkusza {sheet_label}** — "
+                                f"{len(raw_df)} wierszy, bez rozpoznanych nagłówków. "
+                                f"Numery kolumn odpowiadają wyborowi poniżej.")
+                    st.dataframe(podglad, width="stretch")
+                    excel_df = render_column_mapper(raw_df)
                 else:
-                    st.markdown(f"**Podgląd arkusza {sheet_label}** — {total_rows} wierszy (wszystkie widoczne).")
-                st.dataframe(excel_df.head(10), width="stretch")
+                    total_rows = len(excel_df)
+                    skad = ("dane od pierwszego wiersza"
+                            if wiersz_naglowka == 0
+                            else f"nagłówek w wierszu {wiersz_naglowka + 1}")
+                    if total_rows > 10:
+                        st.markdown(f"**Podgląd arkusza {sheet_label}** — pokazano pierwsze 10 "
+                                   f"z **{total_rows}** wierszy ({skad}). "
+                                   f"Analiza uwzględni wszystkie {total_rows}.")
+                    else:
+                        st.markdown(f"**Podgląd arkusza {sheet_label}** — {total_rows} wierszy "
+                                    f"({skad}, wszystkie widoczne).")
+                    st.dataframe(excel_df.head(10), width="stretch")
             except ValueError as exc:
                 st.error(str(exc))
 
