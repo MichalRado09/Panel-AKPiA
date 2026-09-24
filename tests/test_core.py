@@ -1727,3 +1727,42 @@ def test_podpowiedz_ze_starego_formatu_nie_wywala_sekcji_1b():
     for smiec in (None, "", "XX", 7, [], {"AI": "dwa"}, {"NIEZNANY": 3}):
         assert set(decyzja_na_liczby(smiec)) == {"DI", "DO", "AI", "AO"}
         assert all(isinstance(v, int) and v >= 0 for v in decyzja_na_liczby(smiec).values())
+
+
+# --- pusta lista urzadzen nie moze wywalac aplikacji --------------------------
+# REGRESJA ZGLOSZONA Z DZIALAJACEJ APLIKACJI: KeyError: '_key' w sekcji 1a.
+
+def test_pusty_dataframe_nie_ma_kolumn_czyli_sekcja_1a_musi_wyjsc_wczesniej():
+    """
+    Sedno błędu: pd.DataFrame([]) nie ma ŻADNYCH kolumn, więc st.data_editor
+    oddaje równie pustą ramkę, a synchronizacja stanu w sekcji 1a sięga po
+    edited["_key"] i leci KeyError — wywalając całą aplikację.
+
+    Ten test przypina sam FAKT z pandas, na którym opiera się poprawka: jeśli
+    kiedyś pandas zacząłby zwracać kolumny dla pustej listy, wczesne wyjście
+    przestałoby być konieczne i ten test to pokaże.
+    """
+    import pandas as pd
+    df = pd.DataFrame([])
+    assert list(df.columns) == []
+    assert df.empty
+    with pytest.raises(KeyError):
+        df["_key"]
+
+
+def test_zestawienie_bez_urzadzen_parsuje_sie_do_pustej_listy():
+    """
+    Pusta lista urządzeń nie jest przypadkiem teoretycznym: zestawienie
+    z samymi nagłówkami (albo usunięcie wszystkich wierszy w tabeli sekcji 1)
+    daje dokładnie ten stan. Parser ma to przyjąć spokojnie - bez wyjątku
+    i bez wymyślania urządzeń.
+    """
+    import pandas as pd
+    kolumny = ["L.p.", "Układ", "Urządzenie (ozn. proj.)", "Typ / Opis odbiornika",
+               "Ilość", "Sygnał Analogowy (4-20mA / 0-10V)", "Sygnał Cyfrowy (DI/DO)"]
+    devices, _ = parse_devices(pd.DataFrame(columns=kolumny))
+    assert devices == []
+
+    bal = count_io(devices, reserve_percent=30)
+    assert bal.base_total == 0
+    assert bal.reserved_total == 0

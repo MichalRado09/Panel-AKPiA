@@ -1219,6 +1219,20 @@ def render_device_budget_selector(devices, rabaty: dict) -> None:
     if "akpia_price_overrides" not in st.session_state:
         st.session_state.akpia_price_overrides = {}
 
+    # PUSTA LISTA URZĄDZEŃ - wyjście zanim powstanie pusty DataFrame.
+    #
+    # REGRESJA, KTÓRA WYWALAŁA CAŁĄ APLIKACJĘ: pd.DataFrame([]) nie ma ŻADNYCH
+    # kolumn, więc st.data_editor oddaje równie pustą ramkę, a synchronizacja
+    # stanu niżej sięga po edited["_key"] i leci KeyError. Nie jest to
+    # przypadek teoretyczny - wystarczy usunąć wszystkie wiersze w tabeli
+    # sekcji 1 albo wgrać zestawienie, z którego parser nie wyciągnie ani
+    # jednego urządzenia, i aplikacja przestaje się renderować.
+    if not devices:
+        st.caption(
+            "Brak urządzeń na liście — nie ma czego zaznaczać do wyceny AKPiA."
+        )
+        return
+
     rows = []
     for i, d in enumerate(devices):
         key = device_key(d, i)
@@ -1318,6 +1332,21 @@ def render_results(devices, balance, project_label, platforma, rabaty, cable_len
         st.rerun()
 
     render_undecided_signal_resolver(devices)
+
+    # Dalsze sekcje budują OFERTĘ, a oferta z zera urządzeń nie ma sensu:
+    # bilans I/O jest pusty, a dobór i tak dołożyłby CPU, licencję, pokrywę
+    # magistrali i obudowę, czyli kosztorys sprzętu, którego nie ma do czego
+    # podłączyć. Zatrzymujemy się TUTAJ, a nie na samej górze funkcji, żeby
+    # tabela z sekcji 1 i formularz ręcznego dodania zostały na ekranie —
+    # inaczej po usunięciu ostatniego wiersza nie dałoby się już nic dodać
+    # i jedynym wyjściem byłoby wgranie pliku od nowa.
+    if not devices:
+        st.info(
+            "**Lista urządzeń jest pusta** — nie ma z czego policzyć bilansu I/O "
+            "ani oferty. Dodaj urządzenie formularzem powyżej albo wgraj plik "
+            "jeszcze raz (panel boczny → „Analiza Projektu”)."
+        )
+        return
 
     st.subheader("1a. Urządzenia obiektowe wchodzące w zakres wyceny AKPiA")
     st.caption(
