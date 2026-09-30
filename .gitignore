@@ -1,10 +1,12 @@
 # ============================================================
 # .gitignore — Panel Inżyniera AKPiA
 # ============================================================
-# WAŻNE: ten plik chroni dane wrażliwe przed przypadkowym wysłaniem
-# do publicznego repozytorium. Przed pierwszym `git push` do publicznego
-# repo sprawdź `git status`, że żaden z poniższych plików nie jest
-# "tracked" (jeśli już był dodany wcześniej, patrz sekcja na końcu pliku).
+# Ten plik chroni przed przypadkowym wysłaniem do repozytorium dwóch
+# rodzajów danych: SEKRETÓW (klucze, hasła) oraz DANYCH KLIENTÓW
+# (historia analiz, wygenerowane oferty, pliki projektowe).
+#
+# UWAGA na cennik.csv — patrz osobna sekcja niżej. Wbrew temu, czego
+# można się spodziewać, jest on ŚWIADOMIE trzymany w repo.
 
 # --- SEKRETY: klucze API, hasła ---
 .env
@@ -14,15 +16,27 @@
 *.key
 *.pem
 
-# --- DANE BIZNESOWE FIRMY (ceny, rabaty, cenniki zakupowe) ---
-# cennik.csv zawiera realne ceny katalogowe i strukturę rabatów firmy —
-# to dane handlowe, nie kod. Do repo trafia tylko cennik_szablon.csv
-# (te same kolumny, bez wypełnionych cen).
-cennik.csv
+# --- CENNIK: świadomie W REPO, nie ignorowany ---
+# cennik.csv JEST wersjonowany i ma być w repozytorium. Zawiera ceny
+# KATALOGOWE, pobrane z ogólnodostępnych źródeł (strony i cenniki
+# producentów/dystrybutorów) - to informacja publiczna, nie dane handlowe
+# firmy. Rabaty, czyli jedyna rzecz faktycznie poufna, NIE siedzą w tym
+# pliku: inżynier ustawia je suwakami w panelu bocznym na czas sesji
+# (i lądują w ustawienia_sesji.json, ignorowanym niżej).
+#
+# NIE USUWAJ tego pliku z repo. Bez niego wszystkie pozycje kosztorysu
+# pokazują "BRAK CENY" i wypadają z sumy - oferta wychodzi zaniżona.
+#
+# cennik_szablon.csv to ten sam zestaw pozycji BEZ cen - punkt wyjścia
+# dla kogoś, kto chce prowadzić własny cennik zamiast tego.
+#
+# Gdyby kiedyś trafiły tu ceny NEGOCJOWANE (nie katalogowe), decyzję
+# trzeba podjąć od nowa: albo przełączyć repozytorium na prywatne, albo
+# przenieść ten plik poza repo.
 
-# Ostatnio użyte ustawienia (rabaty firmowe, platforma...) i podpowiedzi
-# nauczone z ręcznych decyzji inżyniera - mogą odzwierciedlać rzeczywiste
-# rabaty firmy i nazewnictwo z realnych projektów, tak jak cennik.csv.
+# --- Ostatnio użyte ustawienia i decyzje inżyniera ---
+# Odzwierciedlają rzeczywiste RABATY firmy i nazewnictwo z realnych
+# projektów - w odróżnieniu od cen katalogowych to są dane handlowe.
 ustawienia_sesji.json
 nauczone_decyzje_sygnalow.json
 
@@ -67,19 +81,19 @@ Thumbs.db
 *.swp
 
 # ============================================================
-# UWAGA — jeśli pliki z listy wyżej były JUŻ dodane do repo:
+# UWAGA — jeśli SEKRET trafił już kiedyś do commita:
 # ============================================================
-# Samo dopisanie do .gitignore NIE usuwa plików już wcześniej
-# zacommitowanych (i widocznych w historii git!). Jeśli cennik.csv
-# albo .env trafiły kiedyś do commita:
+# Samo dopisanie do .gitignore NIE usuwa pliku już wcześniej
+# zacommitowanego (i widocznego w historii git!). Jeśli .env albo
+# secrets.toml trafiły kiedyś do commita:
 #
-#   git rm --cached cennik.csv
-#   git rm --cached -r historia_projektow/
-#   git commit -m "Usunięcie danych wrażliwych z repo"
+#   git rm --cached .env
+#   git commit -m "Usunięcie sekretu z repo"
 #
 # To usuwa plik z PRZYSZŁYCH commitów, ale NIE z historii. Jeśli klucz
-# API lub ceny trafiły już do publicznego repo (nawet w starym commicie),
-# traktuj je jako ujawnione: zmień klucz API w Google AI Studio i/lub
-# poproś przełożonego o rotację cen/rabatów, jeśli mają charakter poufny.
+# API trafił już do publicznego repo (nawet w starym commicie), traktuj
+# go jako UJAWNIONY: wygeneruj nowy w Google AI Studio i skasuj stary.
 # Do trwałego wyczyszczenia historii służy `git filter-repo` — to
 # osobna, nietrywialna operacja, zapytaj zanim ją wykonasz.
+#
+# NIE DOTYCZY cennik.csv — ten jest w repo celowo, patrz sekcja wyżej.
