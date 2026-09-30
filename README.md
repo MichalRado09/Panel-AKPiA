@@ -26,6 +26,8 @@ do wyciągania urządzeń z PDF-ów i dokumentów mieszanych.
 Szczegóły wszystkich plików, których aplikacja oczekuje (i co się stanie, gdy
 któregoś zabraknie) — w [WYMAGANE_PLIKI.md](WYMAGANE_PLIKI.md).
 
+Przejmujesz projekt po kimś (albo przekazujesz go dalej)? — [PRZEKAZANIE.md](PRZEKAZANIE.md).
+
 ## Czemu można ufać, a co jest szacunkiem
 
 To najważniejsza tabela w tym pliku. Aplikacja **sama oznacza** w interfejsie
@@ -34,7 +36,7 @@ pozycje z drugiej kolumny — nic nie jest podawane jako pewnik bez pokrycia.
 | Obszar | Status | Podstawa |
 |---|---|---|
 | Dobór sterownika — Beckhoff CX9020, Siemens ET200SP | **zwalidowany co do sztuki** | Cała listwa DPK2 Wujek, potwierdzona niezależnie listą materiałów i rysunkiem konfiguracji; ET200SP na projekcie Malbork |
-| Zliczanie I/O, rezerwa, klasyfikacja sygnałów | **reguły jawne, testowane** | 148 testów jednostkowych |
+| Zliczanie I/O, rezerwa, klasyfikacja sygnałów | **reguły jawne, testowane** | 173 testy jednostkowe |
 | Dobór sterownika — Siemens S7-1500 | ⚠ typowa konfiguracja | Bez projektu referencyjnego. Dobór **sam dokłada o tym uwagę** przy każdym użyciu tej platformy |
 | Wyposażenie szafy (złączki, przekaźniki) | ⚠ oszacowanie | Reguły z jednego projektu; na drugim błąd 7–33% |
 | Rozdzielnica (obudowa, korytka, okablowanie, zabezpieczenia) | ⚠ oszacowanie | Z sumy szerokości aparatów na szynie TH35. Bez walidacji na projekcie — rozmiar obudowy zatwierdza projektant |
